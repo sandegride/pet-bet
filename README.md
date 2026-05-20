@@ -1,8 +1,32 @@
-# Dota Bet Bot
+# Pet Bet
 
-Telegram-бот на Go для виртуальных ставок на Dota 2 матчи.
+Telegram-бот на Go для виртуальных ставок на собственный следующий ranked/competitive матч в Dota 2.
 
-Проект сейчас работает только с виртуальными монетами. Реальных денег, платежей, депозитов, вывода средств, KYC и внешних betting API здесь нет.
+Проект работает только с виртуальными монетами. Здесь нет реальных денег, платежей, депозитов, вывода средств, KYC, bookmaker odds, betting API и ставок на pro-матчи.
+
+## Механика MVP
+
+1. Пользователь пишет `/start`.
+2. Привязывает Dota аккаунт: `/link_dota <account_id>`.
+3. Бот сохраняет последний известный соревновательный матч как `last_known_match_id`.
+4. Пользователь делает ставку на победу в своём следующем ranked/competitive матче: `/bet 100`.
+5. Сумма списывается из доступного баланса и замораживается в `frozen_balance`.
+6. Worker периодически проверяет историю матчей через Dota provider.
+7. Первый новый competitive match после `last_known_match_id` считается целевым матчем ставки.
+8. Если пользователь выиграл, frozen amount снимается, а на доступный баланс начисляется `potential_payout`.
+9. Если пользователь проиграл, frozen amount окончательно списывается.
+10. Бот присылает результат, а пользователь может посмотреть `/history`.
+
+Пример: баланс 1000, ставка 100 с odds `2.00`.
+
+```text
+до ставки:      balance=1000, frozen=0
+после /bet 100: balance=900,  frozen=100
+win:            balance=1100, frozen=0
+loss:           balance=900,  frozen=0
+```
+
+`last_known_match_id` сохраняется именно при привязке аккаунта, чтобы старые матчи не были приняты за следующий матч после ставки.
 
 ## Запуск
 
@@ -16,81 +40,74 @@ cp .env.example .env
 
 ```env
 TELEGRAM_BOT_TOKEN=...
-ADMIN_TELEGRAM_IDS=123456789,987654321
+DOTA_PROVIDER=mock
 ```
 
-`DATABASE_URL` можно оставить пустым: приложение соберёт строку подключения из `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` и `POSTGRES_DB`.
+Для локальной разработки по умолчанию используется `mock` provider. Он генерирует новый ranked match примерно раз в минуту. Для OpenDota:
 
-Запустите PostgreSQL, миграции и бота:
+```env
+DOTA_PROVIDER=opendota
+OPENDOTA_BASE_URL=https://api.opendota.com/api
+DOTA_SYNC_INTERVAL_SECONDS=60
+```
+
+Запустите PostgreSQL, миграции, bot и worker:
 
 ```sh
 make up
 ```
 
-Посмотреть логи:
+Логи:
 
 ```sh
 make logs
 ```
 
-Подключиться к PostgreSQL:
+PostgreSQL shell:
 
 ```sh
 make psql
 ```
 
-Остановить проект:
+Остановка:
 
 ```sh
 make down
 ```
 
-Redis добавлен как optional service:
-
-```sh
-docker compose --profile redis up -d --build
-```
-
 ## Команды бота
-
-Пользовательские команды:
 
 ```text
 /start
+/link_dota <account_id>
 /balance
-/next
+/bet <amount>
+/active_bet
+/cancel_bet
 /history
 /help
 ```
 
-Админские команды:
+Основной flow:
 
 ```text
-/admin_add_match Team A | Team B | Tournament | 2026-05-25 18:00 | 1.75 | 2.05
-/admin_finish_match 1 | Team A
-/admin_cancel_match 1
+/start
+/link_dota 123456789
+/balance
+/bet 100
+/active_bet
 ```
 
-Админы задаются через `ADMIN_TELEGRAM_IDS` в `.env`, через запятую.
+После следующего ranked/competitive матча worker рассчитает ставку и бот отправит уведомление.
 
-## Пример flow
+## Dota Provider
 
-1. Пользователь пишет `/start` и получает `INITIAL_BALANCE`.
-2. Админ создаёт матч:
+Провайдер выбирается через `DOTA_PROVIDER`:
 
-```text
-/admin_add_match Team Spirit | BetBoom Team | DreamLeague | 2026-05-25 18:00 | 1.75 | 2.05
-```
+- `mock` — локальная разработка без внешнего API;
+- `opendota` — OpenDota API.
 
-3. Пользователь открывает `/next`, нажимает inline-кнопку ставки и вводит сумму.
-4. Админ завершает матч:
-
-```text
-/admin_finish_match 1 | Team Spirit
-```
-
-5. Бот рассчитывает pending-ставки, начисляет выигрыши через wallet service и пишет все изменения баланса в `transactions`.
-6. Пользователь смотрит `/balance` и `/history`.
+OpenDota recent matches endpoint используется для истории матчей игрока, match details endpoint оставлен в provider abstraction для расширения. Worker логирует ошибки provider call и продолжает работу по другим пользователям.
 
 ## Миграции
 

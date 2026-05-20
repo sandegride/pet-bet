@@ -2,6 +2,7 @@ package users
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -38,7 +39,10 @@ func (r *Repository) Create(
 		ctx,
 		`INSERT INTO users (telegram_id, username, first_name, balance, is_admin)
 		 VALUES ($1, $2, $3, 0, $4)
-		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''), balance, is_admin, is_blocked, created_at, updated_at`,
+		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
+		           balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
+		           dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
+		           created_at, updated_at`,
 		telegramID,
 		username,
 		firstName,
@@ -59,7 +63,10 @@ func (r *Repository) UpdateProfile(
 		`UPDATE users
 		 SET username = $2, first_name = $3, is_admin = is_admin OR $4, updated_at = now()
 		 WHERE id = $1
-		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''), balance, is_admin, is_blocked, created_at, updated_at`,
+		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
+		           balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
+		           dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
+		           created_at, updated_at`,
 		userID,
 		username,
 		firstName,
@@ -98,7 +105,10 @@ func (r *Repository) IsAdmin(ctx context.Context, telegramID int64) (bool, error
 
 func selectUserSQL(where string) string {
 	return fmt.Sprintf(
-		`SELECT id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''), balance, is_admin, is_blocked, created_at, updated_at
+		`SELECT id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
+		        balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
+		        dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
+		        created_at, updated_at
 		 FROM users
 		 WHERE %s`,
 		where,
@@ -107,14 +117,23 @@ func selectUserSQL(where string) string {
 
 func scanUser(row pgx.Row) (domain.User, error) {
 	var user domain.User
+	var dotaAccountID sql.NullInt64
+	var lastKnownMatchID sql.NullInt64
+	var lastKnownMatchStartedAt sql.NullTime
 	err := row.Scan(
 		&user.ID,
 		&user.TelegramID,
 		&user.Username,
 		&user.FirstName,
 		&user.Balance,
+		&user.FrozenBalance,
 		&user.IsAdmin,
 		&user.IsBlocked,
+		&user.SteamID,
+		&dotaAccountID,
+		&lastKnownMatchID,
+		&lastKnownMatchStartedAt,
+		&user.IsDotaLinked,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -123,6 +142,16 @@ func scanUser(row pgx.Row) (domain.User, error) {
 			return domain.User{}, ErrNotFound
 		}
 		return domain.User{}, err
+	}
+
+	if dotaAccountID.Valid {
+		user.DotaAccountID = &dotaAccountID.Int64
+	}
+	if lastKnownMatchID.Valid {
+		user.LastKnownMatchID = &lastKnownMatchID.Int64
+	}
+	if lastKnownMatchStartedAt.Valid {
+		user.LastKnownMatchStartedAt = &lastKnownMatchStartedAt.Time
 	}
 
 	return user, nil

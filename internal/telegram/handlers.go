@@ -7,77 +7,45 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/shopspring/decimal"
 
-	"stavki/internal/bets"
 	"stavki/internal/domain"
-	"stavki/internal/matches"
-	"stavki/internal/settlement"
+	"stavki/internal/selfbets"
 	"stavki/internal/users"
 	"stavki/internal/wallet"
 )
 
-const (
-	adminAddMatchExample    = "/admin_add_match Team A | Team B | Tournament | 2026-05-25 18:00 | 1.75 | 2.05"
-	adminFinishMatchExample = "/admin_finish_match 1 | Team A"
-	adminCancelMatchExample = "/admin_cancel_match 1"
-	adminTimeLayout         = "2006-01-02 15:04"
-)
-
-type AdminAddMatchCommand struct {
-	TeamA          string
-	TeamB          string
-	TournamentName string
-	StartsAt       time.Time
-	TeamAOdds      string
-	TeamBOdds      string
-}
-
-type AdminFinishMatchCommand struct {
-	MatchID    int64
-	WinnerTeam string
-}
-
 type Handler struct {
-	users   *users.Service
-	wallet  *wallet.Service
-	matches *matches.Service
-	bets    *bets.Service
-	states  *StateStore
-	logger  *slog.Logger
+	users    *users.Service
+	wallet   *wallet.Service
+	selfbets *selfbets.Service
+	logger   *slog.Logger
 }
 
 func NewHandler(
 	usersService *users.Service,
 	walletService *wallet.Service,
-	matchesService *matches.Service,
-	betsService *bets.Service,
-	states *StateStore,
+	selfBetsService *selfbets.Service,
 	logger *slog.Logger,
 ) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if states == nil {
-		states = NewStateStore()
-	}
 
 	return &Handler{
-		users:   usersService,
-		wallet:  walletService,
-		matches: matchesService,
-		bets:    betsService,
-		states:  states,
-		logger:  logger,
+		users:    usersService,
+		wallet:   walletService,
+		selfbets: selfBetsService,
+		logger:   logger,
 	}
 }
 
 func (h *Handler) HandleUpdate(ctx context.Context, api *tgbotapi.BotAPI, update tgbotapi.Update) {
 	if update.CallbackQuery != nil {
-		h.handleCallback(ctx, api, update.CallbackQuery)
+		if _, err := api.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "")); err != nil {
+			h.logger.Error("answer callback", "error", err)
+		}
 		return
 	}
 
@@ -85,32 +53,32 @@ func (h *Handler) HandleUpdate(ctx context.Context, api *tgbotapi.BotAPI, update
 		return
 	}
 
-	if update.Message.IsCommand() {
-		h.handleCommand(ctx, api, update.Message)
+	if !update.Message.IsCommand() {
+		h.sendText(api, update.Message.Chat.ID, "Я понимаю команды. Используй /help.")
 		return
 	}
 
-	h.handleText(ctx, api, update.Message)
+	h.handleCommand(ctx, api, update.Message)
 }
 
 func (h *Handler) handleCommand(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	switch msg.Command() {
 	case "start":
 		h.handleStart(ctx, api, msg)
+	case "link_dota":
+		h.handleLinkDota(ctx, api, msg)
 	case "balance":
 		h.handleBalance(ctx, api, msg)
-	case "next":
-		h.handleNext(ctx, api, msg)
+	case "bet":
+		h.handleBet(ctx, api, msg)
+	case "active_bet":
+		h.handleActiveBet(ctx, api, msg)
+	case "cancel_bet":
+		h.handleCancelBet(ctx, api, msg)
 	case "history":
 		h.handleHistory(ctx, api, msg)
 	case "help":
 		h.sendText(api, msg.Chat.ID, helpText())
-	case "admin_add_match":
-		h.handleAdminAddMatch(ctx, api, msg)
-	case "admin_finish_match":
-		h.handleAdminFinishMatch(ctx, api, msg)
-	case "admin_cancel_match":
-		h.handleAdminCancelMatch(ctx, api, msg)
 	default:
 		h.sendText(api, msg.Chat.ID, "Неизвестная команда. Используй /help.")
 	}
@@ -124,9 +92,39 @@ func (h *Handler) handleStart(ctx context.Context, api *tgbotapi.BotAPI, msg *tg
 	}
 
 	h.sendText(api, msg.Chat.ID, fmt.Sprintf(
-		"Привет, %s!\nПрофиль готов. Баланс: %d виртуальных монет.\n\nОткрой /next, чтобы посмотреть ближайший матч.",
+		"Привет, %s!\nДоступно: %d виртуальных монет.\nЗаморожено: %d.\n\nСначала привяжи Dota аккаунт:\n/link_dota <account_id>",
 		displayName(user),
 		user.Balance,
+		user.FrozenBalance,
+	))
+}
+
+func (h *Handler) handleLinkDota(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	accountID, err := parsePositiveInt64(msg.CommandArguments())
+	if err != nil {
+		h.sendText(api, msg.Chat.ID, "Неверный формат.\nПример: /link_dota 123456789")
+		return
+	}
+
+	if _, err := h.users.GetOrCreateByTelegram(ctx, msg.From.ID, msg.From.UserName, msg.From.FirstName); err != nil {
+		h.replyError(api, msg.Chat.ID, "Не удалось создать профиль.", err)
+		return
+	}
+
+	result, err := h.selfbets.LinkDotaAccount(ctx, msg.From.ID, accountID)
+	if err != nil {
+		h.replyError(api, msg.Chat.ID, "Не удалось привязать Dota аккаунт.", err)
+		return
+	}
+
+	if result.LastMatch == nil {
+		h.sendText(api, msg.Chat.ID, "Аккаунт привязан. Соревновательных матчей пока не найдено: первая ставка будет рассчитана после первого найденного ranked/competitive матча.")
+		return
+	}
+
+	h.sendText(api, msg.Chat.ID, fmt.Sprintf(
+		"Аккаунт привязан. Последний известный матч сохранён: %d.\nТеперь можно поставить на следующий соревновательный матч: /bet 100",
+		result.LastMatch.MatchID,
 	))
 }
 
@@ -137,36 +135,66 @@ func (h *Handler) handleBalance(ctx context.Context, api *tgbotapi.BotAPI, msg *
 		return
 	}
 
-	balance, err := h.wallet.GetBalance(ctx, user.ID)
+	balances, err := h.wallet.GetBalances(ctx, user.ID)
 	if err != nil {
 		h.replyError(api, msg.Chat.ID, "Не удалось получить баланс.", err)
 		return
 	}
 
-	h.sendText(api, msg.Chat.ID, fmt.Sprintf("Баланс: %d виртуальных монет.", balance))
+	h.sendText(api, msg.Chat.ID, fmt.Sprintf(
+		"Баланс:\nДоступно: %d\nЗаморожено: %d\nВсего: %d",
+		balances.Balance,
+		balances.FrozenBalance,
+		balances.Balance+balances.FrozenBalance,
+	))
 }
 
-func (h *Handler) handleNext(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	match, err := h.matches.GetNextUpcoming(ctx)
+func (h *Handler) handleBet(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	amount, err := parsePositiveInt64(msg.CommandArguments())
 	if err != nil {
-		if errors.Is(err, matches.ErrNotFound) {
-			h.sendText(api, msg.Chat.ID, "Ближайших матчей пока нет.")
-			return
-		}
-		h.replyError(api, msg.Chat.ID, "Не удалось получить матч.", err)
+		h.sendText(api, msg.Chat.ID, "Неверный формат.\nПример: /bet 100")
 		return
 	}
 
-	message := tgbotapi.NewMessage(msg.Chat.ID, formatMatch(match))
-	keyboard := nextMatchKeyboard(match)
-	message.ReplyMarkup = keyboard
-	if _, err := api.Send(message); err != nil {
-		h.logger.Error("send next match", "error", err)
+	bet, err := h.selfbets.PlaceNextMatchWinBet(ctx, msg.From.ID, amount)
+	if err != nil {
+		h.sendText(api, msg.Chat.ID, friendlyError(err))
+		return
 	}
+
+	h.sendText(api, msg.Chat.ID, fmt.Sprintf(
+		"Ставка принята на победу в следующем соревновательном матче.\nСумма: %d\nКэф: %s\nПотенциальная выплата: %d\nБаланс заморожен до результата матча.",
+		bet.Amount,
+		bet.Odds,
+		bet.PotentialPayout,
+	))
+}
+
+func (h *Handler) handleActiveBet(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	bet, err := h.selfbets.GetActiveBet(ctx, msg.From.ID)
+	if err != nil {
+		if errors.Is(err, selfbets.ErrNoActiveBet) {
+			h.sendText(api, msg.Chat.ID, "Активной ставки нет.")
+			return
+		}
+		h.replyError(api, msg.Chat.ID, "Не удалось получить активную ставку.", err)
+		return
+	}
+
+	h.sendText(api, msg.Chat.ID, formatSelfBet("Активная ставка", bet))
+}
+
+func (h *Handler) handleCancelBet(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
+	if err := h.selfbets.CancelActiveBet(ctx, msg.From.ID); err != nil {
+		h.sendText(api, msg.Chat.ID, friendlyError(err))
+		return
+	}
+
+	h.sendText(api, msg.Chat.ID, "Ставка отменена, замороженные монеты вернулись в доступный баланс.")
 }
 
 func (h *Handler) handleHistory(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	history, err := h.bets.GetUserHistory(ctx, msg.From.ID, 10)
+	history, err := h.selfbets.GetHistory(ctx, msg.From.ID, 10)
 	if err != nil {
 		h.replyError(api, msg.Chat.ID, "Не удалось получить историю ставок.", err)
 		return
@@ -181,184 +209,17 @@ func (h *Handler) handleHistory(ctx context.Context, api *tgbotapi.BotAPI, msg *
 	for _, item := range history {
 		fmt.Fprintf(
 			&b,
-			"\n#%d: %s vs %s\nВыбор: %s | Сумма: %d | Кэф: %s | Потенциально: %d | Статус: %s",
+			"\n#%d | %s | сумма %d | кэф %s | выплата %d | матч %s",
 			item.ID,
-			item.TeamA,
-			item.TeamB,
-			item.SelectedTeam,
+			item.Status,
 			item.Amount,
 			item.Odds,
 			item.PotentialPayout,
-			item.Status,
+			formatOptionalMatchID(item.TargetMatchID),
 		)
 	}
 
 	h.sendText(api, msg.Chat.ID, b.String())
-}
-
-func (h *Handler) handleCallback(ctx context.Context, api *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
-	if _, err := api.Request(tgbotapi.NewCallback(callback.ID, "")); err != nil {
-		h.logger.Error("answer callback", "error", err)
-	}
-
-	if callback.Message == nil {
-		return
-	}
-
-	parts := strings.Split(callback.Data, ":")
-	if len(parts) != 3 || parts[0] != "bet" {
-		h.sendText(api, callback.Message.Chat.ID, "Неизвестное действие.")
-		return
-	}
-
-	matchID, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || matchID <= 0 {
-		h.sendText(api, callback.Message.Chat.ID, "Некорректный матч.")
-		return
-	}
-
-	if _, err := h.users.GetByTelegramID(ctx, callback.From.ID); err != nil {
-		h.sendText(api, callback.Message.Chat.ID, "Сначала создай профиль через /start.")
-		return
-	}
-
-	match, err := h.matches.GetByID(ctx, matchID)
-	if err != nil {
-		h.replyError(api, callback.Message.Chat.ID, "Матч не найден.", err)
-		return
-	}
-
-	var selectedTeam string
-	switch parts[2] {
-	case "a":
-		selectedTeam = match.TeamA
-	case "b":
-		selectedTeam = match.TeamB
-	default:
-		h.sendText(api, callback.Message.Chat.ID, "Некорректная команда.")
-		return
-	}
-
-	h.states.SetBetState(callback.From.ID, BetState{MatchID: match.ID, SelectedTeam: selectedTeam})
-	h.sendText(api, callback.Message.Chat.ID, fmt.Sprintf("Введите сумму ставки на %s целым числом.", selectedTeam))
-}
-
-func (h *Handler) handleText(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	state, ok := h.states.GetBetState(msg.From.ID)
-	if !ok {
-		h.sendText(api, msg.Chat.ID, "Я не понял сообщение. Используй /help.")
-		return
-	}
-
-	amount, err := strconv.ParseInt(strings.TrimSpace(msg.Text), 10, 64)
-	if err != nil || amount <= 0 {
-		h.sendText(api, msg.Chat.ID, "Введите положительное целое число.")
-		return
-	}
-
-	bet, err := h.bets.PlaceBet(ctx, msg.From.ID, state.MatchID, state.SelectedTeam, amount)
-	if err != nil {
-		h.states.Clear(msg.From.ID)
-		h.sendText(api, msg.Chat.ID, friendlyError(err))
-		return
-	}
-	h.states.Clear(msg.From.ID)
-
-	h.sendText(api, msg.Chat.ID, fmt.Sprintf(
-		"Ставка принята.\nКоманда: %s\nСумма: %d\nКэф: %s\nПотенциальный выигрыш: %d",
-		bet.SelectedTeam,
-		bet.Amount,
-		bet.Odds,
-		bet.PotentialPayout,
-	))
-}
-
-func (h *Handler) handleAdminAddMatch(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	if !h.ensureAdmin(ctx, api, msg) {
-		return
-	}
-
-	command, err := ParseAdminAddMatchArgs(msg.CommandArguments())
-	if err != nil {
-		h.sendText(api, msg.Chat.ID, fmt.Sprintf("Неверный формат.\nПример:\n%s", adminAddMatchExample))
-		return
-	}
-
-	match, err := h.matches.CreateMatch(
-		ctx,
-		command.TournamentName,
-		command.TeamA,
-		command.TeamB,
-		command.StartsAt,
-		command.TeamAOdds,
-		command.TeamBOdds,
-	)
-	if err != nil {
-		h.replyError(api, msg.Chat.ID, "Не удалось создать матч.", err)
-		return
-	}
-
-	h.sendText(api, msg.Chat.ID, fmt.Sprintf(
-		"Матч создан: #%d\n%s vs %s\nСтарт: %s\nКэфы: %s / %s",
-		match.ID,
-		match.TeamA,
-		match.TeamB,
-		match.StartsAt.Format(adminTimeLayout),
-		match.TeamAOdds,
-		match.TeamBOdds,
-	))
-}
-
-func (h *Handler) handleAdminFinishMatch(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	if !h.ensureAdmin(ctx, api, msg) {
-		return
-	}
-
-	command, err := ParseAdminFinishMatchArgs(msg.CommandArguments())
-	if err != nil {
-		h.sendText(api, msg.Chat.ID, fmt.Sprintf("Неверный формат.\nПример:\n%s", adminFinishMatchExample))
-		return
-	}
-
-	if err := h.matches.FinishMatch(ctx, command.MatchID, command.WinnerTeam); err != nil {
-		h.replyError(api, msg.Chat.ID, "Не удалось завершить матч.", err)
-		return
-	}
-
-	h.sendText(api, msg.Chat.ID, "Матч завершён, ставки рассчитаны.")
-}
-
-func (h *Handler) handleAdminCancelMatch(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	if !h.ensureAdmin(ctx, api, msg) {
-		return
-	}
-
-	matchID, err := ParseAdminCancelMatchArgs(msg.CommandArguments())
-	if err != nil {
-		h.sendText(api, msg.Chat.ID, fmt.Sprintf("Неверный формат.\nПример:\n%s", adminCancelMatchExample))
-		return
-	}
-
-	if err := h.matches.CancelMatch(ctx, matchID); err != nil {
-		h.replyError(api, msg.Chat.ID, "Не удалось отменить матч.", err)
-		return
-	}
-
-	h.sendText(api, msg.Chat.ID, "Матч отменён, pending-ставки возвращены.")
-}
-
-func (h *Handler) ensureAdmin(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) bool {
-	isAdmin, err := h.users.IsAdmin(ctx, msg.From.ID)
-	if err != nil {
-		h.replyError(api, msg.Chat.ID, "Не удалось проверить права администратора.", err)
-		return false
-	}
-	if !isAdmin {
-		h.sendText(api, msg.Chat.ID, "Нет доступа.")
-		return false
-	}
-
-	return true
 }
 
 func (h *Handler) sendText(api *tgbotapi.BotAPI, chatID int64, text string) {
@@ -372,140 +233,59 @@ func (h *Handler) replyError(api *tgbotapi.BotAPI, chatID int64, message string,
 	h.sendText(api, chatID, fmt.Sprintf("%s\n%s", message, friendlyError(err)))
 }
 
-func ParseAdminAddMatchArgs(args string) (AdminAddMatchCommand, error) {
-	parts := splitPipeArgs(args)
-	if len(parts) != 6 {
-		return AdminAddMatchCommand{}, errors.New("invalid parts count")
+func parsePositiveInt64(value string) (int64, error) {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, errors.New("invalid positive int64")
 	}
 
-	startsAt, err := time.ParseInLocation(adminTimeLayout, parts[3], time.Local)
-	if err != nil {
-		return AdminAddMatchCommand{}, err
-	}
-
-	if parts[0] == "" || parts[1] == "" || strings.EqualFold(parts[0], parts[1]) {
-		return AdminAddMatchCommand{}, errors.New("invalid teams")
-	}
-
-	teamAOdds, err := normalizeCommandOdds(parts[4])
-	if err != nil {
-		return AdminAddMatchCommand{}, err
-	}
-	teamBOdds, err := normalizeCommandOdds(parts[5])
-	if err != nil {
-		return AdminAddMatchCommand{}, err
-	}
-
-	return AdminAddMatchCommand{
-		TeamA:          parts[0],
-		TeamB:          parts[1],
-		TournamentName: parts[2],
-		StartsAt:       startsAt,
-		TeamAOdds:      teamAOdds,
-		TeamBOdds:      teamBOdds,
-	}, nil
-}
-
-func ParseAdminFinishMatchArgs(args string) (AdminFinishMatchCommand, error) {
-	parts := splitPipeArgs(args)
-	if len(parts) != 2 {
-		return AdminFinishMatchCommand{}, errors.New("invalid parts count")
-	}
-
-	matchID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || matchID <= 0 {
-		return AdminFinishMatchCommand{}, errors.New("invalid match id")
-	}
-	if parts[1] == "" {
-		return AdminFinishMatchCommand{}, errors.New("empty winner")
-	}
-
-	return AdminFinishMatchCommand{MatchID: matchID, WinnerTeam: parts[1]}, nil
-}
-
-func ParseAdminCancelMatchArgs(args string) (int64, error) {
-	parts := splitPipeArgs(args)
-	if len(parts) != 1 {
-		return 0, errors.New("invalid parts count")
-	}
-
-	matchID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || matchID <= 0 {
-		return 0, errors.New("invalid match id")
-	}
-
-	return matchID, nil
-}
-
-func splitPipeArgs(args string) []string {
-	rawParts := strings.Split(args, "|")
-	parts := make([]string, 0, len(rawParts))
-	for _, part := range rawParts {
-		parts = append(parts, strings.TrimSpace(part))
-	}
-
-	return parts
-}
-
-func normalizeCommandOdds(value string) (string, error) {
-	odds, err := decimal.NewFromString(strings.TrimSpace(value))
-	if err != nil {
-		return "", err
-	}
-	if odds.LessThan(decimal.NewFromInt(1)) {
-		return "", errors.New("odds must be at least 1.00")
-	}
-
-	return odds.StringFixed(2), nil
+	return parsed, nil
 }
 
 func friendlyError(err error) string {
 	switch {
-	case errors.Is(err, users.ErrNotFound):
+	case errors.Is(err, users.ErrNotFound), errors.Is(err, selfbets.ErrUserNotFound):
 		return "Сначала создай профиль через /start."
+	case errors.Is(err, selfbets.ErrDotaNotLinked):
+		return "Сначала привяжи Dota аккаунт: /link_dota <account_id>."
+	case errors.Is(err, selfbets.ErrActiveBetExists):
+		return "У тебя уже есть активная ставка. Посмотри её через /active_bet."
+	case errors.Is(err, selfbets.ErrNoActiveBet):
+		return "Активной ставки нет."
+	case errors.Is(err, selfbets.ErrInvalidAmount), errors.Is(err, wallet.ErrInvalidAmount):
+		return "Сумма должна быть положительным целым числом."
 	case errors.Is(err, wallet.ErrInsufficientFunds):
-		return "Недостаточно виртуальных монет на балансе."
-	case errors.Is(err, bets.ErrInvalidAmount):
-		return "Сумма ставки должна быть положительным целым числом."
-	case errors.Is(err, bets.ErrInvalidOdds), errors.Is(err, matches.ErrInvalidOdds):
-		return "Коэффициент должен быть не меньше 1.00."
-	case errors.Is(err, bets.ErrUserBlocked):
-		return "Профиль заблокирован."
-	case errors.Is(err, bets.ErrMatchNotUpcoming):
-		return "На этот матч уже нельзя поставить."
-	case errors.Is(err, bets.ErrBettingClosed):
-		return "Приём ставок на этот матч закрыт."
-	case errors.Is(err, bets.ErrInvalidSelectedTeam), errors.Is(err, settlement.ErrInvalidWinner), errors.Is(err, matches.ErrInvalidTeam):
-		return "Команда указана некорректно."
-	case errors.Is(err, matches.ErrNotFound):
-		return "Матч не найден."
-	case errors.Is(err, settlement.ErrMatchCanceled):
-		return "Матч отменён."
-	case errors.Is(err, settlement.ErrMatchSettled):
-		return "Матч уже рассчитан."
+		return "Недостаточно доступных виртуальных монет."
+	case errors.Is(err, wallet.ErrInsufficientFrozen):
+		return "Недостаточно замороженных виртуальных монет."
+	case errors.Is(err, selfbets.ErrBetAlreadyTargeted):
+		return "Ставку уже нельзя отменить: она привязана к найденному матчу."
+	case errors.Is(err, selfbets.ErrInvalidAccountID):
+		return "Dota account id должен быть положительным числом."
+	case errors.Is(err, selfbets.ErrHistoryAdvanced):
+		return "В истории уже появился новый соревновательный матч. Я обновил сохранённый match id; повтори /bet, чтобы поставить на следующий матч."
 	default:
 		return "Попробуй ещё раз позже."
 	}
 }
 
-func formatMatch(match domain.MatchWithOdds) string {
-	tournament := match.TournamentName
-	if tournament == "" {
-		tournament = "Без турнира"
-	}
-
+func formatSelfBet(title string, bet domain.SelfBet) string {
 	return fmt.Sprintf(
-		"Ближайший матч #%d\nТурнир: %s\n%s vs %s\nСтарт: %s\nКэфы: %s — %s, %s — %s",
-		match.ID,
-		tournament,
-		match.TeamA,
-		match.TeamB,
-		match.StartsAt.Local().Format(adminTimeLayout),
-		match.TeamA,
-		match.TeamAOdds,
-		match.TeamB,
-		match.TeamBOdds,
+		"%s:\nСумма: %d\nКэф: %s\nПотенциальная выплата: %d\nСтатус: %s\nСоздана: %s",
+		title,
+		bet.Amount,
+		bet.Odds,
+		bet.PotentialPayout,
+		bet.Status,
+		bet.CreatedAt.Local().Format("2006-01-02 15:04"),
 	)
+}
+
+func formatOptionalMatchID(matchID *int64) string {
+	if matchID == nil {
+		return "ожидается"
+	}
+	return strconv.FormatInt(*matchID, 10)
 }
 
 func displayName(user domain.User) string {
@@ -522,14 +302,12 @@ func helpText() string {
 	return strings.Join([]string{
 		"Команды:",
 		"/start — создать профиль",
-		"/balance — баланс",
-		"/next — ближайший матч",
+		"/link_dota <account_id> — привязать Dota аккаунт",
+		"/balance — доступный и замороженный баланс",
+		"/bet <amount> — поставить на победу в следующем ranked/competitive матче",
+		"/active_bet — активная ставка",
+		"/cancel_bet — отменить ставку до найденного матча",
 		"/history — история ставок",
 		"/help — помощь",
-		"",
-		"Админ:",
-		"/admin_add_match Team A | Team B | Tournament | 2026-05-25 18:00 | 1.75 | 2.05",
-		"/admin_finish_match 1 | Team A",
-		"/admin_cancel_match 1",
 	}, "\n")
 }

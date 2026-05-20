@@ -18,6 +18,9 @@ func TestLoadParsesAdminTelegramIDs(t *testing.T) {
 	t.Setenv("INITIAL_BALANCE", "1000")
 	t.Setenv("BET_LOCK_MINUTES", "5")
 	t.Setenv("ADMIN_TELEGRAM_IDS", "123, 456,789")
+	t.Setenv("DOTA_PROVIDER", "mock")
+	t.Setenv("OPENDOTA_BASE_URL", "https://api.opendota.com/api")
+	t.Setenv("DOTA_SYNC_INTERVAL_SECONDS", "30")
 
 	cfg, err := Load()
 	if err != nil {
@@ -27,5 +30,11 @@ func TestLoadParsesAdminTelegramIDs(t *testing.T) {
 	want := []int64{123, 456, 789}
 	if !reflect.DeepEqual(cfg.AdminTelegramIDs, want) {
 		t.Fatalf("AdminTelegramIDs = %#v, want %#v", cfg.AdminTelegramIDs, want)
+	}
+	if cfg.Dota.Provider != "mock" {
+		t.Fatalf("Dota.Provider = %q", cfg.Dota.Provider)
+	}
+	if cfg.Dota.SyncIntervalSeconds != 30 {
+		t.Fatalf("Dota.SyncIntervalSeconds = %d", cfg.Dota.SyncIntervalSeconds)
 	}
 }

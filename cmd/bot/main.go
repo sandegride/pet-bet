@@ -10,10 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"stavki/internal/bets"
 	"stavki/internal/config"
-	"stavki/internal/matches"
-	"stavki/internal/settlement"
+	"stavki/internal/dota"
+	"stavki/internal/selfbets"
 	"stavki/internal/telegram"
 	"stavki/internal/users"
 	"stavki/internal/wallet"
@@ -52,17 +51,16 @@ func main() {
 	usersRepo := users.NewRepository(pool)
 	usersService := users.NewService(pool, usersRepo, walletService, cfg.InitialBalance, cfg.AdminTelegramIDs)
 
-	matchesRepo := matches.NewRepository(pool)
-	matchesService := matches.NewService(pool, matchesRepo, time.Local)
+	dotaProvider, err := dota.NewProvider(cfg.Dota)
+	if err != nil {
+		logger.Error("failed to create dota provider", "error", err)
+		os.Exit(1)
+	}
 
-	betsRepo := bets.NewRepository(pool)
-	betsService := bets.NewService(pool, betsRepo, usersRepo, matchesRepo, walletService, cfg.BetLockMinutes)
+	selfBetsRepo := selfbets.NewRepository(pool)
+	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, dotaProvider, nil, logger)
 
-	settlementService := settlement.NewService(pool, matchesRepo, betsService, walletService)
-	matchesService.SetSettlementService(settlementService)
-
-	stateStore := telegram.NewStateStore()
-	handler := telegram.NewHandler(usersService, walletService, matchesService, betsService, stateStore, logger)
+	handler := telegram.NewHandler(usersService, walletService, selfBetsService, logger)
 	bot, err := telegram.NewBot(cfg.TelegramBotToken, handler, logger)
 	if err != nil {
 		logger.Error("failed to create telegram bot", "error", err)

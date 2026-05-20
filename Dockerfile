@@ -14,8 +14,14 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \
-    -o /out/app \
+    -o /out/bot \
     ./cmd/bot/main.go
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/worker \
+    ./cmd/worker/main.go
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
@@ -23,8 +29,9 @@ WORKDIR /app
 
 ENV APP_ENV=production
 
-COPY --from=builder /out/app /app/app
+COPY --from=builder /out/bot /app/bot
+COPY --from=builder /out/worker /app/worker
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["/app/app"]
+CMD ["/app/bot"]

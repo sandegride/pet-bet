@@ -27,27 +27,61 @@ type TransactionType string
 const (
 	TransactionTypeInitialBonus    TransactionType = "initial_bonus"
 	TransactionTypeBetDebit        TransactionType = "bet_debit"
+	TransactionTypeBetFreeze       TransactionType = "bet_freeze"
+	TransactionTypeBetUnfreeze     TransactionType = "bet_unfreeze"
 	TransactionTypeBetWin          TransactionType = "bet_win"
+	TransactionTypeBetLoss         TransactionType = "bet_loss"
 	TransactionTypeBetRefund       TransactionType = "bet_refund"
 	TransactionTypeAdminAdjustment TransactionType = "admin_adjustment"
+	TransactionTypeLinkDotaAccount TransactionType = "link_dota_account"
+	TransactionTypeSyncSnapshot    TransactionType = "sync_match_snapshot"
 )
 
 const (
-	ReferenceTypeUser  = "user"
-	ReferenceTypeBet   = "bet"
-	ReferenceTypeMatch = "match"
+	ReferenceTypeUser      = "user"
+	ReferenceTypeBet       = "bet"
+	ReferenceTypeMatch     = "match"
+	ReferenceTypeSelfBet   = "self_bet"
+	ReferenceTypeDotaMatch = "dota_match"
+)
+
+type SelfBetStatus string
+
+const (
+	SelfBetStatusActive    SelfBetStatus = "active"
+	SelfBetStatusWon       SelfBetStatus = "won"
+	SelfBetStatusLost      SelfBetStatus = "lost"
+	SelfBetStatusCancelled SelfBetStatus = "cancelled"
+	SelfBetStatusVoid      SelfBetStatus = "void"
+)
+
+type SelfBetPrediction string
+
+const SelfBetPredictionWin SelfBetPrediction = "win"
+
+type MatchResult string
+
+const (
+	MatchResultWin  MatchResult = "win"
+	MatchResultLoss MatchResult = "loss"
 )
 
 type User struct {
-	ID         int64
-	TelegramID int64
-	Username   string
-	FirstName  string
-	Balance    int64
-	IsAdmin    bool
-	IsBlocked  bool
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID                      int64
+	TelegramID              int64
+	Username                string
+	FirstName               string
+	Balance                 int64
+	FrozenBalance           int64
+	IsAdmin                 bool
+	IsBlocked               bool
+	SteamID                 string
+	DotaAccountID           *int64
+	LastKnownMatchID        *int64
+	LastKnownMatchStartedAt *time.Time
+	IsDotaLinked            bool
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type Match struct {
@@ -88,4 +122,24 @@ type BetHistoryItem struct {
 	TeamA          string
 	TeamB          string
 	StartsAt       time.Time
+}
+
+type SelfBet struct {
+	ID              int64
+	UserID          int64
+	Amount          int64
+	FrozenAmount    int64
+	Odds            string
+	PotentialPayout int64
+	Prediction      SelfBetPrediction
+	Status          SelfBetStatus
+	TargetMatchID   *int64
+	ResolvedResult  string
+	CreatedAt       time.Time
+	SettledAt       *time.Time
+}
+
+type SelfBetHistoryItem struct {
+	SelfBet
+	DotaAccountID *int64
 }

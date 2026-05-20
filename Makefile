@@ -25,7 +25,7 @@ down:
 	$(COMPOSE) down
 
 logs:
-	$(COMPOSE) logs -f bot postgres
+	$(COMPOSE) logs -f bot worker postgres
 
 build:
 	$(COMPOSE) build

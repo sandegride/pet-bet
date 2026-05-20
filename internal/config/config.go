@@ -19,6 +19,13 @@ type Config struct {
 	InitialBalance   int64
 	BetLockMinutes   int
 	AdminTelegramIDs []int64
+	Dota             DotaConfig
+}
+
+type DotaConfig struct {
+	Provider            string
+	OpenDotaBaseURL     string
+	SyncIntervalSeconds int
 }
 
 type PostgresConfig struct {
@@ -36,6 +43,8 @@ func Load() (Config, error) {
 	cfg.TelegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	cfg.DatabaseURL = strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	cfg.Dota.Provider = strings.ToLower(getEnv("DOTA_PROVIDER", "mock"))
+	cfg.Dota.OpenDotaBaseURL = getEnv("OPENDOTA_BASE_URL", "https://api.opendota.com/api")
 
 	cfg.Postgres = PostgresConfig{
 		Host:     strings.TrimSpace(os.Getenv("POSTGRES_HOST")),
@@ -56,6 +65,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.BetLockMinutes = betLockMinutes
+
+	syncInterval, err := parseIntEnvWithDefault("DOTA_SYNC_INTERVAL_SECONDS", 60)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Dota.SyncIntervalSeconds = syncInterval
 
 	adminIDs, err := parseInt64ListEnv("ADMIN_TELEGRAM_IDS")
 	if err != nil {
@@ -105,6 +120,18 @@ func (cfg Config) Validate() error {
 		return errors.New("BET_LOCK_MINUTES must be greater than 0")
 	}
 
+	if cfg.Dota.Provider != "mock" && cfg.Dota.Provider != "opendota" {
+		return errors.New("DOTA_PROVIDER must be mock or opendota")
+	}
+
+	if cfg.Dota.OpenDotaBaseURL == "" {
+		return errors.New("OPENDOTA_BASE_URL must not be empty")
+	}
+
+	if cfg.Dota.SyncIntervalSeconds <= 0 {
+		return errors.New("DOTA_SYNC_INTERVAL_SECONDS must be greater than 0")
+	}
+
 	return nil
 }
 
@@ -134,6 +161,20 @@ func parseIntEnv(name string) (int, error) {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {
 		return 0, fmt.Errorf("%s is required", name)
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be int: %w", name, err)
+	}
+
+	return parsed, nil
+}
+
+func parseIntEnvWithDefault(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
 	}
 
 	parsed, err := strconv.Atoi(value)

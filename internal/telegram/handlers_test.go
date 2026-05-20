@@ -1,51 +1,34 @@
 package telegram
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestParseAdminAddMatchArgs(t *testing.T) {
+func TestParsePositiveInt64(t *testing.T) {
 	t.Parallel()
 
-	got, err := ParseAdminAddMatchArgs("Team A | Team B | The International | 2026-05-25 18:00 | 1.75 | 2.05")
+	got, err := parsePositiveInt64("100")
 	if err != nil {
-		t.Fatalf("ParseAdminAddMatchArgs() error = %v", err)
+		t.Fatalf("parsePositiveInt64() error = %v", err)
 	}
-
-	if got.TeamA != "Team A" {
-		t.Fatalf("TeamA = %q", got.TeamA)
-	}
-	if got.TeamB != "Team B" {
-		t.Fatalf("TeamB = %q", got.TeamB)
-	}
-	if got.TournamentName != "The International" {
-		t.Fatalf("TournamentName = %q", got.TournamentName)
-	}
-	if got.StartsAt.Format(adminTimeLayout) != "2026-05-25 18:00" {
-		t.Fatalf("StartsAt = %s", got.StartsAt.Format(adminTimeLayout))
-	}
-	if got.TeamAOdds != "1.75" || got.TeamBOdds != "2.05" {
-		t.Fatalf("odds = %s/%s", got.TeamAOdds, got.TeamBOdds)
+	if got != 100 {
+		t.Fatalf("parsePositiveInt64() = %d, want 100", got)
 	}
 }
 
-func TestParseAdminAddMatchArgsRejectsBadFormat(t *testing.T) {
+func TestHelpTextDoesNotExposeProMatchCommands(t *testing.T) {
 	t.Parallel()
 
-	if _, err := ParseAdminAddMatchArgs("Team A | Team B"); err == nil {
-		t.Fatal("expected error")
+	text := helpText()
+	for _, command := range []string{"/next", "/admin_add_match", "/admin_finish_match", "/admin_cancel_match"} {
+		if strings.Contains(text, command) {
+			t.Fatalf("help text contains old pro-match command %s", command)
+		}
 	}
-}
-
-func TestParseAdminFinishMatchArgs(t *testing.T) {
-	t.Parallel()
-
-	got, err := ParseAdminFinishMatchArgs("42 | Team A")
-	if err != nil {
-		t.Fatalf("ParseAdminFinishMatchArgs() error = %v", err)
-	}
-	if got.MatchID != 42 {
-		t.Fatalf("MatchID = %d", got.MatchID)
-	}
-	if got.WinnerTeam != "Team A" {
-		t.Fatalf("WinnerTeam = %q", got.WinnerTeam)
+	for _, command := range []string{"/link_dota", "/bet", "/active_bet"} {
+		if !strings.Contains(text, command) {
+			t.Fatalf("help text does not contain self-match command %s", command)
+		}
 	}
 }

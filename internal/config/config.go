@@ -97,8 +97,8 @@ func (cfg Config) Validate() error {
 		return fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
 	}
 
-	if cfg.InitialBalance < 0 {
-		return errors.New("INITIAL_BALANCE must be greater than or equal to 0")
+	if cfg.InitialBalance <= 0 {
+		return errors.New("INITIAL_BALANCE must be greater than 0")
 	}
 
 	if cfg.BetLockMinutes <= 0 {

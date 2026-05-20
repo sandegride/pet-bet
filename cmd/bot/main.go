@@ -10,7 +10,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"stavki/internal/bets"
 	"stavki/internal/config"
+	"stavki/internal/matches"
+	"stavki/internal/settlement"
+	"stavki/internal/telegram"
+	"stavki/internal/users"
+	"stavki/internal/wallet"
 )
 
 func main() {
@@ -40,6 +46,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	walletRepo := wallet.NewRepository(pool)
+	walletService := wallet.NewService(walletRepo)
+
+	usersRepo := users.NewRepository(pool)
+	usersService := users.NewService(pool, usersRepo, walletService, cfg.InitialBalance, cfg.AdminTelegramIDs)
+
+	matchesRepo := matches.NewRepository(pool)
+	matchesService := matches.NewService(pool, matchesRepo, time.Local)
+
+	betsRepo := bets.NewRepository(pool)
+	betsService := bets.NewService(pool, betsRepo, usersRepo, matchesRepo, walletService, cfg.BetLockMinutes)
+
+	settlementService := settlement.NewService(pool, matchesRepo, betsService, walletService)
+	matchesService.SetSettlementService(settlementService)
+
+	stateStore := telegram.NewStateStore()
+	handler := telegram.NewHandler(usersService, walletService, matchesService, betsService, stateStore, logger)
+	bot, err := telegram.NewBot(cfg.TelegramBotToken, handler, logger)
+	if err != nil {
+		logger.Error("failed to create telegram bot", "error", err)
+		os.Exit(1)
+	}
+
 	logger.Info(
 		"bot started",
 		"app_env", cfg.AppEnv,
@@ -50,6 +79,10 @@ func main() {
 		"admin_count", len(cfg.AdminTelegramIDs),
 	)
 
-	<-ctx.Done()
+	if err := bot.Run(ctx); err != nil {
+		logger.Error("telegram polling stopped with error", "error", err)
+		os.Exit(1)
+	}
+
 	logger.Info("bot stopped")
 }

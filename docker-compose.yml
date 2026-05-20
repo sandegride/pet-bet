@@ -6,9 +6,24 @@ services:
     env_file:
       - .env
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - bot-network
+
+  migrate:
+    image: migrate/migrate:v4.17.1
+    depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      - up
+    restart: "no"
     networks:
       - bot-network
 

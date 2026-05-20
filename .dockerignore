@@ -1,0 +1,16 @@
+.git
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+Dockerfile
+docker-compose.yml
+README.md
+tmp
+bin
+bot
+dist
+.DS_Store
+coverage.out
+*.log

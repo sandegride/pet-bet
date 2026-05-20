@@ -85,28 +85,28 @@ func (p *SteamProvider) GetRecentMatches(ctx context.Context, accountID int64) (
 			continue
 		}
 
-		details, err := p.GetMatchDetails(ctx, item.MatchID)
-		if err != nil {
-			return nil, err
-		}
-
-		lobbyType := details.LobbyType
-		if lobbyType == 0 {
-			lobbyType = item.LobbyType
-		}
-		if details.StartedAt.IsZero() && item.StartTime > 0 {
-			details.StartedAt = time.Unix(item.StartTime, 0).UTC()
-		}
-
-		matches = append(matches, RecentMatch{
+		match := RecentMatch{
 			MatchID:    item.MatchID,
-			StartedAt:  details.StartedAt,
-			LobbyType:  lobbyType,
-			GameMode:   details.GameMode,
+			StartedAt:  time.Unix(item.StartTime, 0).UTC(),
+			LobbyType:  item.LobbyType,
 			PlayerSlot: playerSlot,
-			RadiantWin: details.RadiantWin,
 			HeroID:     heroID,
-		})
+		}
+
+		details, err := p.GetMatchDetails(ctx, item.MatchID)
+		if err == nil {
+			match.GameMode = details.GameMode
+			match.RadiantWin = details.RadiantWin
+			match.HasResult = true
+			if details.LobbyType != 0 {
+				match.LobbyType = details.LobbyType
+			}
+			if !details.StartedAt.IsZero() {
+				match.StartedAt = details.StartedAt
+			}
+		}
+
+		matches = append(matches, match)
 	}
 
 	return matches, nil

@@ -269,6 +269,8 @@ func friendlyError(err error) string {
 		return "На сервере не настроен STEAM_WEB_API_KEY. Напиши администратору."
 	case errors.Is(err, dota.ErrProviderUnavailable):
 		return "Dota provider временно недоступен. Попробуй ещё раз позже."
+	case errors.Is(err, selfbets.ErrMatchResultMissing):
+		return "Результат матча ещё недоступен. Worker попробует снова позже."
 	case errors.Is(err, selfbets.ErrHistoryAdvanced):
 		return "В истории уже появился новый соревновательный матч. Я обновил сохранённый match id; повтори /bet, чтобы поставить на следующий матч."
 	default:

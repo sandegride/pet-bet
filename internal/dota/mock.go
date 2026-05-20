@@ -37,6 +37,7 @@ func (p *MockProvider) GetRecentMatches(ctx context.Context, accountID int64) ([
 			PlayerSlot: playerSlot,
 			RadiantWin: radiantWin,
 			HeroID:     1 + bucket%130,
+			HasResult:  true,
 		})
 	}
 

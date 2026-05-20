@@ -23,6 +23,7 @@ type RecentMatch struct {
 	PlayerSlot int
 	RadiantWin bool
 	HeroID     int64
+	HasResult  bool
 }
 
 type MatchDetails struct {

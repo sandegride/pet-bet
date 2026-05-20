@@ -27,6 +27,7 @@ var (
 	ErrPayoutOverflow     = errors.New("potential payout is too large")
 	ErrBetAlreadyTargeted = errors.New("bet is already attached to a match")
 	ErrHistoryAdvanced    = errors.New("new competitive matches were found before bet")
+	ErrMatchResultMissing = errors.New("dota match result is not available yet")
 )
 
 type Notifier interface {
@@ -115,7 +116,7 @@ func (s *Service) LinkDotaAccount(ctx context.Context, telegramID int64, account
 	if err := s.repo.LinkDotaAccount(ctx, tx, user.ID, accountID, latest); err != nil {
 		return LinkResult{}, err
 	}
-	if latest != nil {
+	if latest != nil && latest.HasResult {
 		if err := s.repo.SaveSnapshot(ctx, tx, user.ID, *latest); err != nil {
 			return LinkResult{}, err
 		}
@@ -178,8 +179,10 @@ func (s *Service) PlaceNextMatchWinBet(ctx context.Context, telegramID int64, am
 	newMatches := NewCompetitiveMatches(recentMatches, user.LastKnownMatchID)
 	if len(newMatches) > 0 {
 		for _, match := range newMatches {
-			if err := s.repo.SaveSnapshot(ctx, tx, user.ID, match); err != nil {
-				return domain.SelfBet{}, err
+			if match.HasResult {
+				if err := s.repo.SaveSnapshot(ctx, tx, user.ID, match); err != nil {
+					return domain.SelfBet{}, err
+				}
 			}
 			if err := s.repo.UpdateLastKnownMatch(ctx, tx, user.ID, match); err != nil {
 				return domain.SelfBet{}, err
@@ -296,13 +299,14 @@ func (s *Service) SettleActiveBetForUser(ctx context.Context, userID int64, matc
 		return err
 	}
 
-	if err := s.repo.SaveSnapshot(ctx, tx, user.ID, match); err != nil {
-		return err
-	}
-
 	bet, err := s.repo.GetActiveBetForUpdate(ctx, tx, user.ID)
 	if err != nil {
 		if errors.Is(err, ErrNoActiveBet) {
+			if match.HasResult {
+				if err := s.repo.SaveSnapshot(ctx, tx, user.ID, match); err != nil {
+					return err
+				}
+			}
 			if err := s.repo.UpdateLastKnownMatch(ctx, tx, user.ID, match); err != nil {
 				return err
 			}
@@ -319,6 +323,13 @@ func (s *Service) SettleActiveBetForUser(ctx context.Context, userID int64, matc
 			}
 			return tx.Commit(ctx)
 		}
+		return err
+	}
+
+	if !match.HasResult {
+		return ErrMatchResultMissing
+	}
+	if err := s.repo.SaveSnapshot(ctx, tx, user.ID, match); err != nil {
 		return err
 	}
 

@@ -46,6 +46,7 @@ func (p *OpenDotaProvider) GetRecentMatches(ctx context.Context, accountID int64
 			PlayerSlot: row.PlayerSlot,
 			RadiantWin: row.RadiantWin,
 			HeroID:     row.HeroID,
+			HasResult:  true,
 		})
 	}
 

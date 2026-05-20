@@ -59,7 +59,7 @@ func (s *Service) SyncOnce(ctx context.Context) {
 		for _, match := range newMatches {
 			if err := s.selfbets.SettleActiveBetForUser(ctx, user.ID, match); err != nil {
 				s.logger.Error("settle self bet", "user_id", user.ID, "match_id", match.MatchID, "error", err)
-				continue
+				break
 			}
 		}
 	}

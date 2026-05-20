@@ -46,6 +46,7 @@ func TestLinkDotaAccountSavesLastKnownCompetitiveMatch(t *testing.T) {
 		PlayerSlot: 0,
 		RadiantWin: true,
 		HeroID:     1,
+		HasResult:  true,
 	}
 	nonCompetitive := dota.RecentMatch{
 		MatchID:    51,
@@ -181,6 +182,7 @@ func TestPlaceNextMatchWinBetSyncsAdvancedHistoryBeforeAcceptingBet(t *testing.T
 		PlayerSlot: 0,
 		RadiantWin: true,
 		HeroID:     1,
+		HasResult:  true,
 	}
 	mock, service := newMockServiceWithProvider(t, fakeProvider{recentMatches: []dota.RecentMatch{match}})
 	defer mock.Close()
@@ -257,11 +259,12 @@ func TestSettleActiveBetForUserWinCreditsPayout(t *testing.T) {
 	mock, service := newMockService(t)
 	defer mock.Close()
 
-	match := dota.RecentMatch{MatchID: 50, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: true, HeroID: 1}
+	match := dota.RecentMatch{MatchID: 50, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: true, HeroID: 1, HasResult: true}
 	expectSettlementPrefix(mock, match)
 	mock.ExpectQuery("SELECT id, user_id, amount").
 		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
 		WillReturnRows(activeBetRows())
+	expectSnapshot(mock, match)
 	mock.ExpectQuery("SELECT balance, frozen_balance").
 		WithArgs(int64(1)).
 		WillReturnRows(pgxmock.NewRows([]string{"balance", "frozen_balance"}).AddRow(int64(900), int64(100)))
@@ -291,11 +294,12 @@ func TestSettleActiveBetForUserLossSpendsFrozen(t *testing.T) {
 	mock, service := newMockService(t)
 	defer mock.Close()
 
-	match := dota.RecentMatch{MatchID: 51, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: false, HeroID: 1}
+	match := dota.RecentMatch{MatchID: 51, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: false, HeroID: 1, HasResult: true}
 	expectSettlementPrefix(mock, match)
 	mock.ExpectQuery("SELECT id, user_id, amount").
 		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
 		WillReturnRows(activeBetRows())
+	expectSnapshot(mock, match)
 	mock.ExpectQuery("SELECT balance, frozen_balance").
 		WithArgs(int64(1)).
 		WillReturnRows(pgxmock.NewRows([]string{"balance", "frozen_balance"}).AddRow(int64(900), int64(100)))
@@ -319,17 +323,69 @@ func TestSettleActiveBetForUserLossSpendsFrozen(t *testing.T) {
 	assertExpectations(t, mock)
 }
 
+func TestSettleActiveBetForUserActiveBetWaitsForMissingResult(t *testing.T) {
+	t.Parallel()
+
+	mock, service := newMockService(t)
+	defer mock.Close()
+
+	match := dota.RecentMatch{MatchID: 52, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, PlayerSlot: 0, HeroID: 1}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, telegram_id").
+		WithArgs(int64(1)).
+		WillReturnRows(linkedUserRows())
+	mock.ExpectQuery("SELECT id, user_id, amount").
+		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
+		WillReturnRows(activeBetRows())
+	mock.ExpectRollback()
+
+	err := service.SettleActiveBetForUser(context.Background(), 1, match)
+	if err != ErrMatchResultMissing {
+		t.Fatalf("SettleActiveBetForUser() error = %v, want %v", err, ErrMatchResultMissing)
+	}
+	assertExpectations(t, mock)
+}
+
+func TestSettleActiveBetForUserNoActiveBetAdvancesWithoutResult(t *testing.T) {
+	t.Parallel()
+
+	mock, service := newMockService(t)
+	defer mock.Close()
+
+	match := dota.RecentMatch{MatchID: 52, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, PlayerSlot: 0, HeroID: 1}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, telegram_id").
+		WithArgs(int64(1)).
+		WillReturnRows(linkedUserRows())
+	mock.ExpectQuery("SELECT id, user_id, amount").
+		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectExec("UPDATE users").
+		WithArgs(int64(1), int64(52), match.StartedAt).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("INSERT INTO transactions").
+		WithArgs(int64(1), string(domain.TransactionTypeSyncSnapshot), int64(0), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	if err := service.SettleActiveBetForUser(context.Background(), 1, match); err != nil {
+		t.Fatalf("SettleActiveBetForUser() error = %v", err)
+	}
+	assertExpectations(t, mock)
+}
+
 func TestSettleActiveBetForUserRepeatedSettlementDoesNotDoubleCredit(t *testing.T) {
 	t.Parallel()
 
 	mock, service := newMockService(t)
 	defer mock.Close()
 
-	match := dota.RecentMatch{MatchID: 50, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: true, HeroID: 1}
+	match := dota.RecentMatch{MatchID: 50, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: true, HeroID: 1, HasResult: true}
 	expectSettlementPrefix(mock, match)
 	mock.ExpectQuery("SELECT id, user_id, amount").
 		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
 		WillReturnError(pgx.ErrNoRows)
+	expectSnapshot(mock, match)
 	mock.ExpectExec("UPDATE users").
 		WithArgs(int64(1), int64(50), match.StartedAt).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -350,11 +406,12 @@ func TestSettleActiveBetForUserSnapshotDuplicateDoesNotBreakSettlement(t *testin
 	mock, service := newMockService(t)
 	defer mock.Close()
 
-	match := dota.RecentMatch{MatchID: 50, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: true, HeroID: 1}
+	match := dota.RecentMatch{MatchID: 50, StartedAt: time.Now(), LobbyType: dota.LobbyTypeRanked, GameMode: dota.GameModeRankedAllPick, PlayerSlot: 0, RadiantWin: true, HeroID: 1, HasResult: true}
 	expectSettlementPrefix(mock, match)
 	mock.ExpectQuery("SELECT id, user_id, amount").
 		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
 		WillReturnError(pgx.ErrNoRows)
+	expectSnapshot(mock, match)
 	mock.ExpectExec("UPDATE users").
 		WithArgs(int64(1), int64(50), match.StartedAt).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -440,6 +497,9 @@ func expectSettlementPrefix(mock pgxmock.PgxPoolIface, match dota.RecentMatch) {
 	mock.ExpectQuery("SELECT id, telegram_id").
 		WithArgs(int64(1)).
 		WillReturnRows(linkedUserRows())
+}
+
+func expectSnapshot(mock pgxmock.PgxPoolIface, match dota.RecentMatch) {
 	mock.ExpectExec("INSERT INTO user_match_snapshots").
 		WithArgs(int64(1), match.MatchID, match.StartedAt, dota.ResolvePlayerResult(match.PlayerSlot, match.RadiantWin), match.HeroID, match.PlayerSlot, match.RadiantWin, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))

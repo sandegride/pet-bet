@@ -25,6 +25,9 @@ type Config struct {
 type DotaConfig struct {
 	Provider            string
 	OpenDotaBaseURL     string
+	SteamBaseURL        string
+	SteamWebAPIKey      string
+	MatchesRequested    int
 	SyncIntervalSeconds int
 }
 
@@ -45,6 +48,8 @@ func Load() (Config, error) {
 	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
 	cfg.Dota.Provider = strings.ToLower(getEnv("DOTA_PROVIDER", "mock"))
 	cfg.Dota.OpenDotaBaseURL = getEnv("OPENDOTA_BASE_URL", "https://api.opendota.com/api")
+	cfg.Dota.SteamBaseURL = getEnv("STEAM_BASE_URL", "https://api.steampowered.com")
+	cfg.Dota.SteamWebAPIKey = strings.TrimSpace(os.Getenv("STEAM_WEB_API_KEY"))
 
 	cfg.Postgres = PostgresConfig{
 		Host:     strings.TrimSpace(os.Getenv("POSTGRES_HOST")),
@@ -71,6 +76,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Dota.SyncIntervalSeconds = syncInterval
+
+	matchesRequested, err := parseIntEnvWithDefault("DOTA_MATCHES_REQUESTED", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Dota.MatchesRequested = matchesRequested
 
 	adminIDs, err := parseInt64ListEnv("ADMIN_TELEGRAM_IDS")
 	if err != nil {
@@ -120,12 +131,24 @@ func (cfg Config) Validate() error {
 		return errors.New("BET_LOCK_MINUTES must be greater than 0")
 	}
 
-	if cfg.Dota.Provider != "mock" && cfg.Dota.Provider != "opendota" {
-		return errors.New("DOTA_PROVIDER must be mock or opendota")
+	if cfg.Dota.Provider != "mock" && cfg.Dota.Provider != "opendota" && cfg.Dota.Provider != "steam" && cfg.Dota.Provider != "auto" {
+		return errors.New("DOTA_PROVIDER must be mock, opendota, steam or auto")
 	}
 
 	if cfg.Dota.OpenDotaBaseURL == "" {
 		return errors.New("OPENDOTA_BASE_URL must not be empty")
+	}
+
+	if cfg.Dota.SteamBaseURL == "" {
+		return errors.New("STEAM_BASE_URL must not be empty")
+	}
+
+	if cfg.Dota.Provider == "steam" && cfg.Dota.SteamWebAPIKey == "" {
+		return errors.New("STEAM_WEB_API_KEY is required when DOTA_PROVIDER=steam")
+	}
+
+	if cfg.Dota.MatchesRequested <= 0 {
+		return errors.New("DOTA_MATCHES_REQUESTED must be greater than 0")
 	}
 
 	if cfg.Dota.SyncIntervalSeconds <= 0 {

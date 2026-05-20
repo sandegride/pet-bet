@@ -11,6 +11,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"stavki/internal/domain"
+	"stavki/internal/dota"
 	"stavki/internal/selfbets"
 	"stavki/internal/users"
 	"stavki/internal/wallet"
@@ -100,9 +101,9 @@ func (h *Handler) handleStart(ctx context.Context, api *tgbotapi.BotAPI, msg *tg
 }
 
 func (h *Handler) handleLinkDota(ctx context.Context, api *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	accountID, err := parsePositiveInt64(msg.CommandArguments())
+	accountID, err := dota.ParseAccountIDInput(msg.CommandArguments())
 	if err != nil {
-		h.sendText(api, msg.Chat.ID, "Неверный формат.\nПример: /link_dota 123456789")
+		h.sendText(api, msg.Chat.ID, "Неверный формат.\nПример: /link_dota 123456789\nМожно также прислать SteamID64 или ссылку вида https://steamcommunity.com/profiles/7656119...")
 		return
 	}
 
@@ -262,6 +263,12 @@ func friendlyError(err error) string {
 		return "Ставку уже нельзя отменить: она привязана к найденному матчу."
 	case errors.Is(err, selfbets.ErrInvalidAccountID):
 		return "Dota account id должен быть положительным числом."
+	case errors.Is(err, dota.ErrMatchHistoryPrivate):
+		return "История матчей закрыта. В Dota 2 включи Settings > Social > Expose Public Match Data, сыграй или обнови историю, потом повтори /link_dota."
+	case errors.Is(err, dota.ErrSteamAPIKeyRequired):
+		return "На сервере не настроен STEAM_WEB_API_KEY. Напиши администратору."
+	case errors.Is(err, dota.ErrProviderUnavailable):
+		return "Dota provider временно недоступен. Попробуй ещё раз позже."
 	case errors.Is(err, selfbets.ErrHistoryAdvanced):
 		return "В истории уже появился новый соревновательный матч. Я обновил сохранённый match id; повтори /bet, чтобы поставить на следующий матч."
 	default:
@@ -302,7 +309,7 @@ func helpText() string {
 	return strings.Join([]string{
 		"Команды:",
 		"/start — создать профиль",
-		"/link_dota <account_id> — привязать Dota аккаунт",
+		"/link_dota <account_id|steamid64|profile_url> — привязать Dota аккаунт",
 		"/balance — доступный и замороженный баланс",
 		"/bet <amount> — поставить на победу в следующем ranked/competitive матче",
 		"/active_bet — активная ставка",

@@ -75,6 +75,7 @@ func (s *Service) LinkDotaAccount(ctx context.Context, telegramID int64, account
 	if accountID <= 0 {
 		return LinkResult{}, ErrInvalidAccountID
 	}
+	accountID = dota.NormalizeAccountID(accountID)
 
 	recentMatches, err := s.provider.GetRecentMatches(ctx, accountID)
 	if err != nil {

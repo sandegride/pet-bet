@@ -28,6 +28,7 @@ func TestSteamProviderGetRecentMatches(t *testing.T) {
 				"status": 1,
 				"matches": [{
 					"match_id": 123,
+					"match_seq_num": 456,
 					"start_time": 1700000000,
 					"lobby_type": 7,
 					"players": [{"account_id": 1010282450, "player_slot": 128, "hero_id": 1}]
@@ -83,6 +84,7 @@ func TestSteamProviderKeepsHistoryMatchWhenDetailsFail(t *testing.T) {
 				"status": 1,
 				"matches": [{
 					"match_id": 123,
+					"match_seq_num": 456,
 					"start_time": 1700000000,
 					"lobby_type": 7,
 					"players": [{"account_id": 1010282450, "player_slot": 0, "hero_id": 1}]
@@ -110,6 +112,82 @@ func TestSteamProviderKeepsHistoryMatchWhenDetailsFail(t *testing.T) {
 	}
 	if !IsCompetitiveMatch(matches[0]) {
 		t.Fatalf("IsCompetitiveMatch() = false, want true")
+	}
+}
+
+func TestSteamProviderFallsBackToSequenceDetails(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/IDOTA2Match_570/GetMatchHistory/v1/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"result": {
+				"status": 1,
+				"matches": [{
+					"match_id": 123,
+					"match_seq_num": 456,
+					"start_time": 1700000000,
+					"lobby_type": 7,
+					"players": [{"account_id": 1010282450, "player_slot": 0, "hero_id": 1}]
+				}]
+			}
+		}`))
+	})
+	mux.HandleFunc("/IDOTA2Match_570/GetMatchDetails/v1/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/IDOTA2Match_570/GetMatchHistoryBySequenceNum/v1/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("start_at_match_seq_num") != "456" {
+			t.Fatalf("start_at_match_seq_num = %q", r.URL.Query().Get("start_at_match_seq_num"))
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"result": {
+				"status": 1,
+				"matches": [{
+					"match_id": 123,
+					"start_time": 1700000000,
+					"lobby_type": 7,
+					"game_mode": 22,
+					"radiant_win": true,
+					"players": [{"account_id": 1010282450, "player_slot": 0, "hero_id": 1}]
+				}]
+			}
+		}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewSteamProvider(server.URL, "steam-key", 5)
+	matches, err := provider.GetRecentMatches(context.Background(), 1010282450)
+	if err != nil {
+		t.Fatalf("GetRecentMatches() error = %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("len(matches) = %d, want 1", len(matches))
+	}
+	if !matches[0].HasResult || matches[0].GameMode != GameModeRankedAllPick || !matches[0].RadiantWin {
+		t.Fatalf("match = %#v, want sequence details", matches[0])
+	}
+}
+
+func TestSteamProviderEmptyDetailsAreMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	provider := NewSteamProvider(server.URL, "steam-key", 5)
+	_, err := provider.GetMatchDetails(context.Background(), 123)
+	if !errors.Is(err, ErrMatchDetailsMissing) {
+		t.Fatalf("GetMatchDetails() error = %v, want %v", err, ErrMatchDetailsMissing)
 	}
 }
 

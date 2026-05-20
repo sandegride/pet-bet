@@ -42,10 +42,11 @@ func (p *SteamProvider) GetRecentMatches(ctx context.Context, accountID int64) (
 			Status       int    `json:"status"`
 			StatusDetail string `json:"statusDetail"`
 			Matches      []struct {
-				MatchID   int64 `json:"match_id"`
-				StartTime int64 `json:"start_time"`
-				LobbyType int   `json:"lobby_type"`
-				Players   []struct {
+				MatchID     int64 `json:"match_id"`
+				MatchSeqNum int64 `json:"match_seq_num"`
+				StartTime   int64 `json:"start_time"`
+				LobbyType   int   `json:"lobby_type"`
+				Players     []struct {
 					AccountID  int64 `json:"account_id"`
 					PlayerSlot int   `json:"player_slot"`
 					HeroID     int64 `json:"hero_id"`
@@ -94,6 +95,9 @@ func (p *SteamProvider) GetRecentMatches(ctx context.Context, accountID int64) (
 		}
 
 		details, err := p.GetMatchDetails(ctx, item.MatchID)
+		if err != nil && item.MatchSeqNum > 0 {
+			details, err = p.GetMatchDetailsBySequenceNum(ctx, item.MatchSeqNum, item.MatchID)
+		}
 		if err == nil {
 			match.GameMode = details.GameMode
 			match.RadiantWin = details.RadiantWin
@@ -140,15 +144,73 @@ func (p *SteamProvider) GetMatchDetails(ctx context.Context, matchID int64) (*Ma
 		return nil, err
 	}
 
-	details := &MatchDetails{
+	return steamMatchDetails{
 		MatchID:    response.Result.MatchID,
-		StartedAt:  time.Unix(response.Result.StartTime, 0).UTC(),
+		StartTime:  response.Result.StartTime,
 		LobbyType:  response.Result.LobbyType,
 		GameMode:   response.Result.GameMode,
 		RadiantWin: response.Result.RadiantWin,
-		Players:    make([]MatchPlayer, 0, len(response.Result.Players)),
+		Players:    response.Result.Players,
+	}.toDomain()
+}
+
+func (p *SteamProvider) GetMatchDetailsBySequenceNum(ctx context.Context, matchSeqNum int64, matchID int64) (*MatchDetails, error) {
+	if p.apiKey == "" {
+		return nil, ErrSteamAPIKeyRequired
 	}
-	for _, player := range response.Result.Players {
+
+	var response struct {
+		Result struct {
+			Status  int                 `json:"status"`
+			Matches []steamMatchDetails `json:"matches"`
+		} `json:"result"`
+	}
+
+	values := url.Values{}
+	values.Set("key", p.apiKey)
+	values.Set("start_at_match_seq_num", fmt.Sprintf("%d", matchSeqNum))
+	values.Set("matches_requested", "1")
+
+	if err := p.getJSON(ctx, "/IDOTA2Match_570/GetMatchHistoryBySequenceNum/v1/?"+values.Encode(), &response); err != nil {
+		return nil, err
+	}
+
+	for _, match := range response.Result.Matches {
+		if matchID == 0 || match.MatchID == matchID {
+			return match.toDomain()
+		}
+	}
+
+	return nil, ErrMatchDetailsMissing
+}
+
+type steamMatchDetails struct {
+	MatchID    int64 `json:"match_id"`
+	StartTime  int64 `json:"start_time"`
+	LobbyType  int   `json:"lobby_type"`
+	GameMode   int   `json:"game_mode"`
+	RadiantWin bool  `json:"radiant_win"`
+	Players    []struct {
+		AccountID  int64 `json:"account_id"`
+		PlayerSlot int   `json:"player_slot"`
+		HeroID     int64 `json:"hero_id"`
+	} `json:"players"`
+}
+
+func (m steamMatchDetails) toDomain() (*MatchDetails, error) {
+	if m.MatchID == 0 || m.StartTime == 0 || len(m.Players) == 0 {
+		return nil, ErrMatchDetailsMissing
+	}
+
+	details := &MatchDetails{
+		MatchID:    m.MatchID,
+		StartedAt:  time.Unix(m.StartTime, 0).UTC(),
+		LobbyType:  m.LobbyType,
+		GameMode:   m.GameMode,
+		RadiantWin: m.RadiantWin,
+		Players:    make([]MatchPlayer, 0, len(m.Players)),
+	}
+	for _, player := range m.Players {
 		details.Players = append(details.Players, MatchPlayer{
 			AccountID:  NormalizeAccountID(player.AccountID),
 			PlayerSlot: player.PlayerSlot,

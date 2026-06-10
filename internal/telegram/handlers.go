@@ -312,7 +312,7 @@ func (h *Handler) handleBetFB(ctx context.Context, api *tgbotapi.BotAPI, msg *tg
 	}
 	var prediction domain.SelfBetPrediction
 	switch strings.ToLower(parts[1]) {
-	case "radiant", "radiant", "р", "радиант":
+	case "radiant", "р", "радиант":
 		prediction = domain.SelfBetPredictionFirstBloodRadiant
 	case "dire", "д", "дайр":
 		prediction = domain.SelfBetPredictionFirstBloodDire

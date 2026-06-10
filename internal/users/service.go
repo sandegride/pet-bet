@@ -126,6 +126,10 @@ func (s *Service) SetAdminByTelegramID(ctx context.Context, telegramID int64) er
 	return s.repo.SetAdminByTelegramID(ctx, telegramID)
 }
 
+func (s *Service) SetBlocked(ctx context.Context, telegramID int64, blocked bool) error {
+	return s.repo.SetBlocked(ctx, telegramID, blocked)
+}
+
 func (s *Service) IsAdmin(ctx context.Context, telegramID int64) (bool, error) {
 	return s.isConfiguredAdmin(telegramID), nil
 }

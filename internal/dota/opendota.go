@@ -30,6 +30,10 @@ func (p *OpenDotaProvider) GetRecentMatches(ctx context.Context, accountID int64
 		PlayerSlot int   `json:"player_slot"`
 		RadiantWin bool  `json:"radiant_win"`
 		HeroID     int64 `json:"hero_id"`
+		Kills      int   `json:"kills"`
+		Deaths     int   `json:"deaths"`
+		Assists    int   `json:"assists"`
+		PartySize  int   `json:"party_size"`
 	}
 
 	if err := p.getJSON(ctx, fmt.Sprintf("/players/%d/recentMatches", accountID), &rows); err != nil {
@@ -47,6 +51,10 @@ func (p *OpenDotaProvider) GetRecentMatches(ctx context.Context, accountID int64
 			RadiantWin: row.RadiantWin,
 			HeroID:     row.HeroID,
 			HasResult:  true,
+			Kills:      row.Kills,
+			Deaths:     row.Deaths,
+			Assists:    row.Assists,
+			PartySize:  row.PartySize,
 		})
 	}
 
@@ -55,15 +63,27 @@ func (p *OpenDotaProvider) GetRecentMatches(ctx context.Context, accountID int64
 
 func (p *OpenDotaProvider) GetMatchDetails(ctx context.Context, matchID int64) (*MatchDetails, error) {
 	var row struct {
-		MatchID    int64 `json:"match_id"`
-		StartTime  int64 `json:"start_time"`
-		LobbyType  int   `json:"lobby_type"`
-		GameMode   int   `json:"game_mode"`
-		RadiantWin bool  `json:"radiant_win"`
-		Players    []struct {
+		MatchID        int64 `json:"match_id"`
+		StartTime      int64 `json:"start_time"`
+		LobbyType      int   `json:"lobby_type"`
+		GameMode       int   `json:"game_mode"`
+		RadiantWin     bool  `json:"radiant_win"`
+		RadiantScore   int   `json:"radiant_score"`
+		DireScore      int   `json:"dire_score"`
+		FirstBloodTime int   `json:"first_blood_time"`
+		AvgMMR         int   `json:"avg_mmr"`
+		Objectives     []struct {
+			Time       int    `json:"time"`
+			Type       string `json:"type"`
+			PlayerSlot int    `json:"player_slot"`
+		} `json:"objectives"`
+		Players []struct {
 			AccountID  int64 `json:"account_id"`
 			PlayerSlot int   `json:"player_slot"`
 			HeroID     int64 `json:"hero_id"`
+			Kills      int   `json:"kills"`
+			Deaths     int   `json:"deaths"`
+			Assists    int   `json:"assists"`
 		} `json:"players"`
 	}
 
@@ -71,19 +91,36 @@ func (p *OpenDotaProvider) GetMatchDetails(ctx context.Context, matchID int64) (
 		return nil, err
 	}
 
+	// Определяем слот игрока, давшего первую кровь, через objectives
+	firstBloodSlot := -1
+	for _, obj := range row.Objectives {
+		if obj.Type == "CHAT_MESSAGE_FIRSTBLOOD" {
+			firstBloodSlot = obj.PlayerSlot
+			break
+		}
+	}
+
 	details := &MatchDetails{
-		MatchID:    row.MatchID,
-		StartedAt:  time.Unix(row.StartTime, 0).UTC(),
-		LobbyType:  row.LobbyType,
-		GameMode:   row.GameMode,
-		RadiantWin: row.RadiantWin,
-		Players:    make([]MatchPlayer, 0, len(row.Players)),
+		MatchID:        row.MatchID,
+		StartedAt:      time.Unix(row.StartTime, 0).UTC(),
+		LobbyType:      row.LobbyType,
+		GameMode:       row.GameMode,
+		RadiantWin:     row.RadiantWin,
+		RadiantScore:   row.RadiantScore,
+		DireScore:      row.DireScore,
+		FirstBloodTime: row.FirstBloodTime,
+		FirstBloodSlot: firstBloodSlot,
+		AvgMMR:         row.AvgMMR,
+		Players:        make([]MatchPlayer, 0, len(row.Players)),
 	}
 	for _, player := range row.Players {
 		details.Players = append(details.Players, MatchPlayer{
 			AccountID:  player.AccountID,
 			PlayerSlot: player.PlayerSlot,
 			HeroID:     player.HeroID,
+			Kills:      player.Kills,
+			Deaths:     player.Deaths,
+			Assists:    player.Assists,
 		})
 	}
 

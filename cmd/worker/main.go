@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"stavki/internal/admin"
 	"stavki/internal/config"
 	"stavki/internal/dota"
 	"stavki/internal/selfbets"
@@ -56,10 +57,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	adminRepo := admin.NewRepository(pool)
+	adminService := admin.NewService(adminRepo)
+
 	walletRepo := wallet.NewRepository(pool)
 	walletService := wallet.NewService(walletRepo)
 	selfBetsRepo := selfbets.NewRepository(pool)
-	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, provider, notifier, logger)
+	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, provider, notifier, adminService, logger)
 
 	worker := workersvc.NewService(provider, selfBetsService, logger)
 	logger.Info(

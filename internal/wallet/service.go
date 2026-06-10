@@ -260,6 +260,11 @@ func (s *Service) SettleFrozenLoss(
 	return insertTransaction(ctx, tx, userID, txType, -frozenAmount, referenceType, referenceID)
 }
 
+// AdminAdjust directly adjusts a user's balance by telegramID (admin-only use).
+func (s *Service) AdminAdjust(ctx context.Context, telegramID int64, delta int64) error {
+	return s.repo.AdminAdjustByTelegramID(ctx, telegramID, delta)
+}
+
 func (s *Service) Record(
 	ctx context.Context,
 	tx pgx.Tx,

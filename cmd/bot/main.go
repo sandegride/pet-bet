@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"stavki/internal/admin"
 	"stavki/internal/config"
 	"stavki/internal/dota"
 	"stavki/internal/selfbets"
@@ -57,10 +58,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	selfBetsRepo := selfbets.NewRepository(pool)
-	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, dotaProvider, nil, logger)
+	adminRepo := admin.NewRepository(pool)
+	adminService := admin.NewService(adminRepo)
 
-	handler := telegram.NewHandler(usersService, walletService, selfBetsService, logger)
+	selfBetsRepo := selfbets.NewRepository(pool)
+	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, dotaProvider, nil, adminService, logger)
+
+	handler := telegram.NewHandler(usersService, walletService, selfBetsService, adminService, cfg.AdminTelegramIDs, logger)
 	bot, err := telegram.NewBot(cfg.TelegramBotToken, handler, logger)
 	if err != nil {
 		logger.Error("failed to create telegram bot", "error", err)

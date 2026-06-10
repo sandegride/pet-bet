@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,6 +39,35 @@ func (r *Repository) GetBalances(ctx context.Context, userID int64) (Balances, e
 	}
 
 	return balances, nil
+}
+
+// AdminAdjustByTelegramID adjusts balance for a user identified by telegram_id.
+// delta can be negative (deduction) or positive (top-up). Uses an internal transaction.
+func (r *Repository) AdminAdjustByTelegramID(ctx context.Context, telegramID int64, delta int64) error {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var userID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE telegram_id = $1 FOR UPDATE`, telegramID).Scan(&userID); err != nil {
+		if err == pgx.ErrNoRows {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("find user: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE users SET balance = balance + $1, updated_at = now() WHERE id = $2`,
+		delta,
+		userID,
+	); err != nil {
+		return fmt.Errorf("adjust balance: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *Repository) GetBalanceLegacy(ctx context.Context, userID int64) (int64, error) {

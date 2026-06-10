@@ -42,7 +42,7 @@ func (r *Repository) Create(
 		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		           balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		           dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		           created_at, updated_at`,
+		           COALESCE(hwid, ''), created_at, updated_at`,
 		telegramID,
 		username,
 		firstName,
@@ -66,7 +66,7 @@ func (r *Repository) UpdateProfile(
 		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		           balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		           dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		           created_at, updated_at`,
+		           COALESCE(hwid, ''), created_at, updated_at`,
 		userID,
 		username,
 		firstName,
@@ -82,6 +82,23 @@ func (r *Repository) SetAdminByTelegramID(ctx context.Context, telegramID int64)
 	)
 	if err != nil {
 		return fmt.Errorf("set admin: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) SetBlocked(ctx context.Context, telegramID int64, blocked bool) error {
+	tag, err := r.db.Exec(
+		ctx,
+		`UPDATE users SET is_blocked = $2, updated_at = now() WHERE telegram_id = $1`,
+		telegramID,
+		blocked,
+	)
+	if err != nil {
+		return fmt.Errorf("set blocked: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -108,7 +125,7 @@ func selectUserSQL(where string) string {
 		`SELECT id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		        balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		        dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		        created_at, updated_at
+		        COALESCE(hwid, ''), created_at, updated_at
 		 FROM users
 		 WHERE %s`,
 		where,
@@ -134,6 +151,7 @@ func scanUser(row pgx.Row) (domain.User, error) {
 		&lastKnownMatchID,
 		&lastKnownMatchStartedAt,
 		&user.IsDotaLinked,
+		&user.HWID,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)

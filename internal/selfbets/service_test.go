@@ -442,7 +442,7 @@ func newMockServiceWithProvider(t *testing.T, provider dota.Provider) (pgxmock.P
 
 	repo := NewRepository(mock)
 	walletService := wallet.NewService(nil)
-	service := NewService(mock, repo, walletService, provider, nil, nil)
+	service := NewService(mock, repo, walletService, provider, nil, nil, nil)
 	return mock, service
 }
 

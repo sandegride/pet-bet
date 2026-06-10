@@ -24,24 +24,31 @@ var (
 	ErrNoActiveBet        = errors.New("active self bet not found")
 	ErrInvalidAmount      = errors.New("bet amount must be greater than 0")
 	ErrInvalidAccountID   = errors.New("dota account id must be greater than 0")
+	ErrInvalidThreshold   = errors.New("kills threshold must be greater than 0")
 	ErrPayoutOverflow     = errors.New("potential payout is too large")
 	ErrBetAlreadyTargeted = errors.New("bet is already attached to a match")
 	ErrHistoryAdvanced    = errors.New("new competitive matches were found before bet")
 	ErrMatchResultMissing = errors.New("dota match result is not available yet")
+	ErrHWIDRequired       = errors.New("hardware ID registration required to place bets")
 )
 
 type Notifier interface {
 	Notify(ctx context.Context, telegramID int64, text string) error
 }
 
+// AdminSettingsProvider позволяет получать настройки администратора.
+type AdminSettingsProvider interface {
+	GetSettings(ctx context.Context) (domain.AdminSettings, error)
+}
+
 type Service struct {
-	db       DB
-	repo     *Repository
-	wallet   *wallet.Service
-	provider dota.Provider
-	notifier Notifier
-	logger   *slog.Logger
-	odds     string
+	db            DB
+	repo          *Repository
+	wallet        *wallet.Service
+	provider      dota.Provider
+	notifier      Notifier
+	adminSettings AdminSettingsProvider
+	logger        *slog.Logger
 }
 
 type LinkResult struct {
@@ -55,6 +62,7 @@ func NewService(
 	walletService *wallet.Service,
 	provider dota.Provider,
 	notifier Notifier,
+	adminSettings AdminSettingsProvider,
 	logger *slog.Logger,
 ) *Service {
 	if logger == nil {
@@ -62,14 +70,46 @@ func NewService(
 	}
 
 	return &Service{
-		db:       db,
-		repo:     repo,
-		wallet:   walletService,
-		provider: provider,
-		notifier: notifier,
-		logger:   logger,
-		odds:     "2.00",
+		db:            db,
+		repo:          repo,
+		wallet:        walletService,
+		provider:      provider,
+		notifier:      notifier,
+		adminSettings: adminSettings,
+		logger:        logger,
 	}
+}
+
+func (s *Service) getOddsForPrediction(ctx context.Context, prediction domain.SelfBetPrediction) string {
+	if s.adminSettings == nil {
+		return "2.00"
+	}
+	settings, err := s.adminSettings.GetSettings(ctx)
+	if err != nil {
+		return "2.00"
+	}
+	switch prediction {
+	case domain.SelfBetPredictionTotalKillsOver:
+		return settings.KillsOverOdds
+	case domain.SelfBetPredictionFirstBloodRadiant, domain.SelfBetPredictionFirstBloodDire:
+		return settings.FirstBloodOdds
+	default:
+		return settings.DefaultOdds
+	}
+}
+
+func (s *Service) checkHWIDIfRequired(ctx context.Context, user domain.User) error {
+	if s.adminSettings == nil {
+		return nil
+	}
+	settings, err := s.adminSettings.GetSettings(ctx)
+	if err != nil {
+		return nil
+	}
+	if settings.HWIDRequired && user.HWID == "" {
+		return ErrHWIDRequired
+	}
+	return nil
 }
 
 func (s *Service) LinkDotaAccount(ctx context.Context, telegramID int64, accountID int64) (LinkResult, error) {
@@ -122,13 +162,9 @@ func (s *Service) LinkDotaAccount(ctx context.Context, telegramID int64, account
 		}
 	}
 	if err := s.wallet.Record(
-		ctx,
-		tx,
-		user.ID,
-		0,
+		ctx, tx, user.ID, 0,
 		domain.TransactionTypeLinkDotaAccount,
-		domain.ReferenceTypeUser,
-		user.ID,
+		domain.ReferenceTypeUser, user.ID,
 	); err != nil {
 		return LinkResult{}, err
 	}
@@ -140,12 +176,43 @@ func (s *Service) LinkDotaAccount(ctx context.Context, telegramID int64, account
 	return LinkResult{AccountID: accountID, LastMatch: latest}, nil
 }
 
+// PlaceNextMatchWinBet — ставка на победу в следующем матче.
 func (s *Service) PlaceNextMatchWinBet(ctx context.Context, telegramID int64, amount int64) (domain.SelfBet, error) {
+	odds := s.getOddsForPrediction(ctx, domain.SelfBetPredictionWin)
+	return s.placeNextMatchBet(ctx, telegramID, amount, domain.SelfBetPredictionWin, nil, odds)
+}
+
+// PlaceTotalKillsBet — ставка на то, что тотал килов в матче будет больше threshold.
+func (s *Service) PlaceTotalKillsBet(ctx context.Context, telegramID int64, amount int64, threshold int64) (domain.SelfBet, error) {
+	if threshold <= 0 {
+		return domain.SelfBet{}, ErrInvalidThreshold
+	}
+	odds := s.getOddsForPrediction(ctx, domain.SelfBetPredictionTotalKillsOver)
+	return s.placeNextMatchBet(ctx, telegramID, amount, domain.SelfBetPredictionTotalKillsOver, &threshold, odds)
+}
+
+// PlaceFirstBloodBet — ставка на то, что первую кровь даст указанная команда.
+func (s *Service) PlaceFirstBloodBet(ctx context.Context, telegramID int64, amount int64, prediction domain.SelfBetPrediction) (domain.SelfBet, error) {
+	if prediction != domain.SelfBetPredictionFirstBloodRadiant && prediction != domain.SelfBetPredictionFirstBloodDire {
+		return domain.SelfBet{}, fmt.Errorf("invalid first blood prediction: %s", prediction)
+	}
+	odds := s.getOddsForPrediction(ctx, prediction)
+	return s.placeNextMatchBet(ctx, telegramID, amount, prediction, nil, odds)
+}
+
+func (s *Service) placeNextMatchBet(
+	ctx context.Context,
+	telegramID int64,
+	amount int64,
+	prediction domain.SelfBetPrediction,
+	killsThreshold *int64,
+	oddsStr string,
+) (domain.SelfBet, error) {
 	if amount <= 0 {
 		return domain.SelfBet{}, ErrInvalidAmount
 	}
 
-	potentialPayout, err := CalculatePotentialPayout(amount, s.odds)
+	potentialPayout, err := CalculatePotentialPayout(amount, oddsStr)
 	if err != nil {
 		return domain.SelfBet{}, err
 	}
@@ -162,6 +229,9 @@ func (s *Service) PlaceNextMatchWinBet(ctx context.Context, telegramID int64, am
 	}
 	if !user.IsDotaLinked || user.DotaAccountID == nil {
 		return domain.SelfBet{}, ErrDotaNotLinked
+	}
+	if err := s.checkHWIDIfRequired(ctx, user); err != nil {
+		return domain.SelfBet{}, err
 	}
 
 	hasActive, err := s.repo.HasActiveBet(ctx, tx, user.ID)
@@ -188,13 +258,9 @@ func (s *Service) PlaceNextMatchWinBet(ctx context.Context, telegramID int64, am
 				return domain.SelfBet{}, err
 			}
 			if err := s.wallet.Record(
-				ctx,
-				tx,
-				user.ID,
-				0,
+				ctx, tx, user.ID, 0,
 				domain.TransactionTypeSyncSnapshot,
-				domain.ReferenceTypeDotaMatch,
-				match.MatchID,
+				domain.ReferenceTypeDotaMatch, match.MatchID,
 			); err != nil {
 				return domain.SelfBet{}, err
 			}
@@ -205,19 +271,15 @@ func (s *Service) PlaceNextMatchWinBet(ctx context.Context, telegramID int64, am
 		return domain.SelfBet{}, ErrHistoryAdvanced
 	}
 
-	bet, err := s.repo.CreateActiveBet(ctx, tx, user.ID, amount, s.odds, potentialPayout)
+	bet, err := s.repo.CreateActiveBet(ctx, tx, user.ID, amount, oddsStr, potentialPayout, prediction, killsThreshold)
 	if err != nil {
 		return domain.SelfBet{}, err
 	}
 
 	if err := s.wallet.Freeze(
-		ctx,
-		tx,
-		user.ID,
-		amount,
+		ctx, tx, user.ID, amount,
 		domain.TransactionTypeBetFreeze,
-		domain.ReferenceTypeSelfBet,
-		bet.ID,
+		domain.ReferenceTypeSelfBet, bet.ID,
 	); err != nil {
 		return domain.SelfBet{}, err
 	}
@@ -240,7 +302,6 @@ func (s *Service) GetHistory(ctx context.Context, telegramID int64, limit int) (
 	if limit > 50 {
 		limit = 50
 	}
-
 	return s.repo.GetHistory(ctx, telegramID, limit)
 }
 
@@ -265,13 +326,9 @@ func (s *Service) CancelActiveBet(ctx context.Context, telegramID int64) error {
 	}
 
 	if err := s.wallet.Unfreeze(
-		ctx,
-		tx,
-		user.ID,
-		bet.FrozenAmount,
+		ctx, tx, user.ID, bet.FrozenAmount,
 		domain.TransactionTypeBetUnfreeze,
-		domain.ReferenceTypeSelfBet,
-		bet.ID,
+		domain.ReferenceTypeSelfBet, bet.ID,
 	); err != nil {
 		return err
 	}
@@ -311,13 +368,9 @@ func (s *Service) SettleActiveBetForUser(ctx context.Context, userID int64, matc
 				return err
 			}
 			if err := s.wallet.Record(
-				ctx,
-				tx,
-				user.ID,
-				0,
+				ctx, tx, user.ID, 0,
 				domain.TransactionTypeSyncSnapshot,
-				domain.ReferenceTypeDotaMatch,
-				match.MatchID,
+				domain.ReferenceTypeDotaMatch, match.MatchID,
 			); err != nil {
 				return err
 			}
@@ -329,38 +382,67 @@ func (s *Service) SettleActiveBetForUser(ctx context.Context, userID int64, matc
 	if !match.HasResult {
 		return ErrMatchResultMissing
 	}
+
+	// Загружаем admin settings для фильтров
+	var adminSettings domain.AdminSettings
+	if s.adminSettings != nil {
+		adminSettings, _ = s.adminSettings.GetSettings(ctx)
+	}
+
+	// Фильтр: только соло игры
+	if adminSettings.SoloOnlyBets && match.PartySize > 1 {
+		s.logger.Info("voiding bet: match is not solo",
+			"bet_id", bet.ID, "party_size", match.PartySize)
+		return s.voidBet(ctx, tx, user, bet, match, "party_match")
+	}
+
+	// Загружаем детали матча если нужно
+	var details *dota.MatchDetails
+	needsDetails := bet.Prediction == domain.SelfBetPredictionTotalKillsOver ||
+		bet.Prediction == domain.SelfBetPredictionFirstBloodRadiant ||
+		bet.Prediction == domain.SelfBetPredictionFirstBloodDire ||
+		adminSettings.MinAvgMMR > 0
+
+	if needsDetails {
+		if details, err = s.provider.GetMatchDetails(ctx, match.MatchID); err != nil {
+			return fmt.Errorf("get match details for settlement: %w", err)
+		}
+	}
+
+	// Фильтр: минимальный средний MMR
+	if adminSettings.MinAvgMMR > 0 && details != nil && details.AvgMMR > 0 && details.AvgMMR < adminSettings.MinAvgMMR {
+		s.logger.Info("voiding bet: avg_mmr below minimum",
+			"bet_id", bet.ID, "avg_mmr", details.AvgMMR, "min_avg_mmr", adminSettings.MinAvgMMR)
+		return s.voidBet(ctx, tx, user, bet, match, "low_mmr")
+	}
+
 	if err := s.repo.SaveSnapshot(ctx, tx, user.ID, match); err != nil {
 		return err
 	}
 
-	result := dota.ResolvePlayerResult(match.PlayerSlot, match.RadiantWin)
-	status := domain.SelfBetStatusLost
-	if result == string(domain.MatchResultWin) {
-		status = domain.SelfBetStatusWon
-	}
+	status, result := s.determineBetOutcome(bet, match, details)
 
 	if status == domain.SelfBetStatusWon {
 		if err := s.wallet.SettleFrozenWin(
-			ctx,
-			tx,
-			user.ID,
+			ctx, tx, user.ID,
+			bet.FrozenAmount, bet.PotentialPayout,
+			domain.TransactionTypeBetWin, domain.ReferenceTypeSelfBet, bet.ID,
+		); err != nil {
+			return err
+		}
+	} else if status == domain.SelfBetStatusLost {
+		if err := s.wallet.SettleFrozenLoss(
+			ctx, tx, user.ID,
 			bet.FrozenAmount,
-			bet.PotentialPayout,
-			domain.TransactionTypeBetWin,
-			domain.ReferenceTypeSelfBet,
-			bet.ID,
+			domain.TransactionTypeBetLoss, domain.ReferenceTypeSelfBet, bet.ID,
 		); err != nil {
 			return err
 		}
 	} else {
-		if err := s.wallet.SettleFrozenLoss(
-			ctx,
-			tx,
-			user.ID,
-			bet.FrozenAmount,
-			domain.TransactionTypeBetLoss,
-			domain.ReferenceTypeSelfBet,
-			bet.ID,
+		// Void
+		if err := s.wallet.Unfreeze(
+			ctx, tx, user.ID, bet.FrozenAmount,
+			domain.TransactionTypeBetUnfreeze, domain.ReferenceTypeSelfBet, bet.ID,
 		); err != nil {
 			return err
 		}
@@ -377,41 +459,137 @@ func (s *Service) SettleActiveBetForUser(ctx context.Context, userID int64, matc
 		return fmt.Errorf("commit self bet settlement: %w", err)
 	}
 
-	s.notifySettlement(ctx, user.TelegramID, bet, match, result)
+	s.notifySettlement(ctx, user.TelegramID, bet, match, status, details)
 	return nil
 }
 
-func (s *Service) GetLinkedUsers(ctx context.Context, limit int) ([]domain.User, error) {
-	if limit <= 0 {
-		limit = 100
-	}
+func (s *Service) determineBetOutcome(
+	bet domain.SelfBet,
+	match dota.RecentMatch,
+	details *dota.MatchDetails,
+) (domain.SelfBetStatus, string) {
+	switch bet.Prediction {
+	case domain.SelfBetPredictionWin:
+		result := dota.ResolvePlayerResult(match.PlayerSlot, match.RadiantWin)
+		if result == string(domain.MatchResultWin) {
+			return domain.SelfBetStatusWon, result
+		}
+		return domain.SelfBetStatusLost, result
 
-	return s.repo.GetLinkedUsers(ctx, limit)
+	case domain.SelfBetPredictionTotalKillsOver:
+		if details == nil || bet.KillsThreshold == nil {
+			return domain.SelfBetStatusVoid, "no_data"
+		}
+		total := int64(details.TotalKills())
+		if total > *bet.KillsThreshold {
+			return domain.SelfBetStatusWon, fmt.Sprintf("total_%d_over_%d", total, *bet.KillsThreshold)
+		}
+		return domain.SelfBetStatusLost, fmt.Sprintf("total_%d_under_%d", total, *bet.KillsThreshold)
+
+	case domain.SelfBetPredictionFirstBloodRadiant:
+		if details == nil || details.FirstBloodSlot < 0 {
+			return domain.SelfBetStatusVoid, "no_data"
+		}
+		if details.FirstBloodIsRadiant() {
+			return domain.SelfBetStatusWon, "first_blood_radiant"
+		}
+		return domain.SelfBetStatusLost, "first_blood_dire"
+
+	case domain.SelfBetPredictionFirstBloodDire:
+		if details == nil || details.FirstBloodSlot < 0 {
+			return domain.SelfBetStatusVoid, "no_data"
+		}
+		if !details.FirstBloodIsRadiant() {
+			return domain.SelfBetStatusWon, "first_blood_dire"
+		}
+		return domain.SelfBetStatusLost, "first_blood_radiant"
+
+	default:
+		return domain.SelfBetStatusVoid, "unknown_prediction"
+	}
 }
 
-func (s *Service) notifySettlement(ctx context.Context, telegramID int64, bet domain.SelfBet, match dota.RecentMatch, result string) {
+func (s *Service) voidBet(
+	ctx context.Context,
+	tx pgx.Tx,
+	user domain.User,
+	bet domain.SelfBet,
+	match dota.RecentMatch,
+	reason string,
+) error {
+	if err := s.wallet.Unfreeze(
+		ctx, tx, user.ID, bet.FrozenAmount,
+		domain.TransactionTypeBetUnfreeze, domain.ReferenceTypeSelfBet, bet.ID,
+	); err != nil {
+		return err
+	}
+	if err := s.repo.MarkSettled(ctx, tx, bet.ID, domain.SelfBetStatusVoid, match.MatchID, reason); err != nil {
+		return err
+	}
+	if err := s.repo.UpdateLastKnownMatch(ctx, tx, user.ID, match); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit void bet: %w", err)
+	}
+	if s.notifier != nil {
+		_ = s.notifier.Notify(ctx, user.TelegramID,
+			fmt.Sprintf("↩️ Ставка #%d аннулирована (%s). Монеты возвращены.", bet.ID, reason))
+	}
+	return nil
+}
+
+func (s *Service) notifySettlement(
+	ctx context.Context,
+	telegramID int64,
+	bet domain.SelfBet,
+	match dota.RecentMatch,
+	status domain.SelfBetStatus,
+	details *dota.MatchDetails,
+) {
 	if s.notifier == nil {
 		return
 	}
 
+	var emoji, statusText string
+	switch status {
+	case domain.SelfBetStatusWon:
+		emoji, statusText = "🏆", "выигрыш начислен"
+	case domain.SelfBetStatusLost:
+		emoji, statusText = "💸", "сумма списана"
+	default:
+		emoji, statusText = "↩️", "ставка аннулирована, монеты возвращены"
+	}
+
+	extraInfo := ""
+	if details != nil {
+		switch bet.Prediction {
+		case domain.SelfBetPredictionTotalKillsOver:
+			extraInfo = fmt.Sprintf("\nТотал килов: %d (порог: %d)", details.TotalKills(), ptrVal(bet.KillsThreshold))
+		case domain.SelfBetPredictionFirstBloodRadiant, domain.SelfBetPredictionFirstBloodDire:
+			fb := "Дайр"
+			if details.FirstBloodIsRadiant() {
+				fb = "Радиант"
+			}
+			extraInfo = fmt.Sprintf("\nПервая кровь: %s", fb)
+		}
+	}
+
 	text := fmt.Sprintf(
-		"Матч %d завершён: %s.\nСтавка: %d\nПотенциальная выплата: %d",
-		match.MatchID,
-		resultText(result),
-		bet.Amount,
-		bet.PotentialPayout,
+		"%s Матч %d завершён: %s.\nСтавка: %d | Выплата: %d%s",
+		emoji, match.MatchID, statusText, bet.Amount, bet.PotentialPayout, extraInfo,
 	)
 	if err := s.notifier.Notify(ctx, telegramID, text); err != nil {
-		s.logger.Error("send self bet settlement notification", "telegram_id", telegramID, "error", err)
+		s.logger.Error("send self bet settlement notification",
+			"telegram_id", telegramID, "error", err)
 	}
 }
 
-func resultText(result string) string {
-	if result == string(domain.MatchResultWin) {
-		return "победа, выигрыш начислен"
+func ptrVal(p *int64) int64 {
+	if p == nil {
+		return 0
 	}
-
-	return "поражение, замороженная сумма списана"
+	return *p
 }
 
 func LatestCompetitiveMatch(matches []dota.RecentMatch) *dota.RecentMatch {
@@ -425,7 +603,6 @@ func LatestCompetitiveMatch(matches []dota.RecentMatch) *dota.RecentMatch {
 			latest = &match
 		}
 	}
-
 	return latest
 }
 

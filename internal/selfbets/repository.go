@@ -123,19 +123,23 @@ func (r *Repository) CreateActiveBet(
 	amount int64,
 	odds string,
 	potentialPayout int64,
+	prediction domain.SelfBetPrediction,
+	killsThreshold *int64,
 ) (domain.SelfBet, error) {
 	return scanSelfBet(tx.QueryRow(
 		ctx,
-		`INSERT INTO self_bets (user_id, amount, frozen_amount, odds, potential_payout, prediction, status)
-		 VALUES ($1, $2, $2, $3, $4, $5, $6)
+		`INSERT INTO self_bets
+		    (user_id, amount, frozen_amount, odds, potential_payout, prediction, status, kills_threshold)
+		 VALUES ($1, $2, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, user_id, amount, frozen_amount, odds::text, potential_payout, prediction, status,
-		           target_match_id, COALESCE(resolved_result, ''), created_at, settled_at`,
+		           target_match_id, COALESCE(resolved_result, ''), kills_threshold, created_at, settled_at`,
 		userID,
 		amount,
 		odds,
 		potentialPayout,
-		string(domain.SelfBetPredictionWin),
+		string(prediction),
 		string(domain.SelfBetStatusActive),
+		killsThreshold,
 	))
 }
 
@@ -225,7 +229,7 @@ func (r *Repository) GetActiveBetByTelegramID(ctx context.Context, telegramID in
 		ctx,
 		`SELECT b.id, b.user_id, b.amount, b.frozen_amount, b.odds::text, b.potential_payout,
 		        b.prediction, b.status, b.target_match_id, COALESCE(b.resolved_result, ''),
-		        b.created_at, b.settled_at
+		        b.kills_threshold, b.created_at, b.settled_at
 		 FROM self_bets b
 		 JOIN users u ON u.id = b.user_id
 		 WHERE u.telegram_id = $1 AND b.status = $2`,
@@ -239,7 +243,7 @@ func (r *Repository) GetHistory(ctx context.Context, telegramID int64, limit int
 		ctx,
 		`SELECT b.id, b.user_id, b.amount, b.frozen_amount, b.odds::text, b.potential_payout,
 		        b.prediction, b.status, b.target_match_id, COALESCE(b.resolved_result, ''),
-		        b.created_at, b.settled_at, u.dota_account_id
+		        b.kills_threshold, b.created_at, b.settled_at, u.dota_account_id
 		 FROM self_bets b
 		 JOIN users u ON u.id = b.user_id
 		 WHERE u.telegram_id = $1
@@ -299,7 +303,7 @@ func userSelectSQL(where string) string {
 		`SELECT id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		        balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		        dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		        created_at, updated_at
+		        COALESCE(hwid, ''), created_at, updated_at
 		 FROM users
 		 WHERE %s`,
 		where,
@@ -310,7 +314,7 @@ func selfBetSelectSQL(where string) string {
 	return fmt.Sprintf(
 		`SELECT id, user_id, amount, frozen_amount, odds::text, potential_payout,
 		        prediction, status, target_match_id, COALESCE(resolved_result, ''),
-		        created_at, settled_at
+		        kills_threshold, created_at, settled_at
 		 FROM self_bets
 		 WHERE %s`,
 		where,
@@ -336,6 +340,7 @@ func scanUser(row pgx.Row) (domain.User, error) {
 		&lastKnownMatchID,
 		&lastKnownMatchStartedAt,
 		&user.IsDotaLinked,
+		&user.HWID,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -364,6 +369,7 @@ func scanSelfBet(row pgx.Row) (domain.SelfBet, error) {
 	var prediction string
 	var status string
 	var targetMatchID sql.NullInt64
+	var killsThreshold sql.NullInt64
 	var settledAt sql.NullTime
 	err := row.Scan(
 		&bet.ID,
@@ -376,6 +382,7 @@ func scanSelfBet(row pgx.Row) (domain.SelfBet, error) {
 		&status,
 		&targetMatchID,
 		&bet.ResolvedResult,
+		&killsThreshold,
 		&bet.CreatedAt,
 		&settledAt,
 	)
@@ -391,6 +398,9 @@ func scanSelfBet(row pgx.Row) (domain.SelfBet, error) {
 	if targetMatchID.Valid {
 		bet.TargetMatchID = &targetMatchID.Int64
 	}
+	if killsThreshold.Valid {
+		bet.KillsThreshold = &killsThreshold.Int64
+	}
 	if settledAt.Valid {
 		bet.SettledAt = &settledAt.Time
 	}
@@ -403,6 +413,7 @@ func scanSelfBetHistory(row pgx.Row) (domain.SelfBetHistoryItem, error) {
 	var prediction string
 	var status string
 	var targetMatchID sql.NullInt64
+	var killsThreshold sql.NullInt64
 	var settledAt sql.NullTime
 	var dotaAccountID sql.NullInt64
 	err := row.Scan(
@@ -416,6 +427,7 @@ func scanSelfBetHistory(row pgx.Row) (domain.SelfBetHistoryItem, error) {
 		&status,
 		&targetMatchID,
 		&item.ResolvedResult,
+		&killsThreshold,
 		&item.CreatedAt,
 		&settledAt,
 		&dotaAccountID,
@@ -428,6 +440,9 @@ func scanSelfBetHistory(row pgx.Row) (domain.SelfBetHistoryItem, error) {
 	item.Status = domain.SelfBetStatus(status)
 	if targetMatchID.Valid {
 		item.TargetMatchID = &targetMatchID.Int64
+	}
+	if killsThreshold.Valid {
+		item.KillsThreshold = &killsThreshold.Int64
 	}
 	if settledAt.Valid {
 		item.SettledAt = &settledAt.Time

@@ -57,7 +57,26 @@ const (
 
 type SelfBetPrediction string
 
-const SelfBetPredictionWin SelfBetPrediction = "win"
+const (
+	// Классическая ставка — победа в матче.
+	SelfBetPredictionWin SelfBetPrediction = "win"
+	// Тотал килов в матче больше порога (KillsThreshold).
+	SelfBetPredictionTotalKillsOver SelfBetPrediction = "total_kills_over"
+	// Первая кровь — команда Радиант.
+	SelfBetPredictionFirstBloodRadiant SelfBetPrediction = "first_blood_radiant"
+	// Первая кровь — команда Дайр.
+	SelfBetPredictionFirstBloodDire SelfBetPrediction = "first_blood_dire"
+)
+
+// AdminSettings — настройки сервиса, задаются администратором через бота.
+type AdminSettings struct {
+	DefaultOdds    string // коэф для ставки "победа"
+	KillsOverOdds  string // коэф для ставки "тотал килов"
+	FirstBloodOdds string // коэф для ставки "первая кровь"
+	SoloOnlyBets   bool   // учитывать только соло-игры
+	MinAvgMMR      int    // минимальный средний рейтинг матча (0 = отключено)
+	HWIDRequired   bool   // требовать привязку железа
+}
 
 type MatchResult string
 
@@ -80,6 +99,7 @@ type User struct {
 	LastKnownMatchID        *int64
 	LastKnownMatchStartedAt *time.Time
 	IsDotaLinked            bool
+	HWID                    string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }
@@ -135,6 +155,7 @@ type SelfBet struct {
 	Status          SelfBetStatus
 	TargetMatchID   *int64
 	ResolvedResult  string
+	KillsThreshold  *int64 // только для SelfBetPredictionTotalKillsOver
 	CreatedAt       time.Time
 	SettledAt       *time.Time
 }

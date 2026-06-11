@@ -80,6 +80,10 @@ func NewService(
 	}
 }
 
+func (s *Service) GetLinkedUsers(ctx context.Context, limit int) ([]domain.User, error) {
+	return s.repo.GetLinkedUsers(ctx, limit)
+}
+
 func (s *Service) getOddsForPrediction(ctx context.Context, prediction domain.SelfBetPrediction) string {
 	if s.adminSettings == nil {
 		return "2.00"

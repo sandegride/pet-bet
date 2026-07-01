@@ -12,6 +12,8 @@ import (
 
 	"stavki/internal/admin"
 	"stavki/internal/config"
+	"stavki/internal/cs"
+	"stavki/internal/csbets"
 	"stavki/internal/dota"
 	"stavki/internal/selfbets"
 	"stavki/internal/telegram"
@@ -58,13 +60,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	csProvider, err := cs.NewProvider(cfg.CS)
+	if err != nil {
+		logger.Error("failed to create cs provider", "error", err)
+		os.Exit(1)
+	}
+
 	adminRepo := admin.NewRepository(pool)
 	adminService := admin.NewService(adminRepo)
 
 	selfBetsRepo := selfbets.NewRepository(pool)
 	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, dotaProvider, nil, adminService, logger)
 
-	handler := telegram.NewHandler(usersService, walletService, selfBetsService, adminService, cfg.AdminTelegramIDs, logger)
+	csBetsRepo := csbets.NewRepository(pool)
+	csBetsService := csbets.NewService(pool, csBetsRepo, walletService, csProvider, nil, adminService, logger)
+
+	handler := telegram.NewHandler(usersService, walletService, selfBetsService, csBetsService, adminService, cfg.AdminTelegramIDs, logger)
 	bot, err := telegram.NewBot(cfg.TelegramBotToken, handler, logger)
 	if err != nil {
 		logger.Error("failed to create telegram bot", "error", err)
@@ -79,6 +90,7 @@ func main() {
 		"initial_balance", cfg.InitialBalance,
 		"bet_lock_minutes", cfg.BetLockMinutes,
 		"admin_count", len(cfg.AdminTelegramIDs),
+		"cs_provider", cfg.CS.Provider,
 	)
 
 	if err := bot.Run(ctx); err != nil {

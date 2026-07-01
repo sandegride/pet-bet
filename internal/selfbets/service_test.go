@@ -24,7 +24,7 @@ func TestPlaceNextMatchWinBetCannotBetIfDotaNotLinked(t *testing.T) {
 		WithArgs(int64(100)).
 		WillReturnRows(userRows().AddRow(
 			int64(1), int64(100), "", "", int64(1000), int64(0), false, false, "",
-			nil, nil, nil, false, time.Now(), time.Now(),
+			nil, nil, nil, false, "", nil, "", nil, nil, false, time.Now(), time.Now(),
 		))
 	mock.ExpectRollback()
 
@@ -65,7 +65,7 @@ func TestLinkDotaAccountSavesLastKnownCompetitiveMatch(t *testing.T) {
 		WithArgs(int64(100)).
 		WillReturnRows(userRows().AddRow(
 			int64(1), int64(100), "", "", int64(1000), int64(0), false, false, "",
-			nil, nil, nil, false, time.Now(), time.Now(),
+			nil, nil, nil, false, "", nil, "", nil, nil, false, time.Now(), time.Now(),
 		))
 	mock.ExpectQuery("SELECT id, user_id, amount").
 		WithArgs(int64(1), string(domain.SelfBetStatusActive)).
@@ -466,14 +466,17 @@ func userRows() *pgxmock.Rows {
 	return pgxmock.NewRows([]string{
 		"id", "telegram_id", "username", "first_name", "balance", "frozen_balance",
 		"is_admin", "is_blocked", "steam_id", "dota_account_id", "last_known_match_id",
-		"last_known_match_started_at", "is_dota_linked", "created_at", "updated_at",
+		"last_known_match_started_at", "is_dota_linked", "hwid",
+		"cs_faceit_player_id", "cs_nickname", "cs_last_known_match_id",
+		"cs_last_known_match_started_at", "is_cs_linked", "created_at", "updated_at",
 	})
 }
 
 func linkedUserRows() *pgxmock.Rows {
 	return userRows().AddRow(
 		int64(1), int64(100), "", "", int64(1000), int64(0), false, false, "",
-		int64(123), int64(49), time.Now().Add(-time.Hour), true, time.Now(), time.Now(),
+		int64(123), int64(49), time.Now().Add(-time.Hour), true, "",
+		nil, "", nil, nil, false, time.Now(), time.Now(),
 	)
 }
 

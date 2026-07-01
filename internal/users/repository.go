@@ -42,7 +42,9 @@ func (r *Repository) Create(
 		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		           balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		           dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		           COALESCE(hwid, ''), created_at, updated_at`,
+		           COALESCE(hwid, ''), cs_faceit_player_id, COALESCE(cs_nickname, ''),
+		           cs_last_known_match_id, cs_last_known_match_started_at, is_cs_linked,
+		           created_at, updated_at`,
 		telegramID,
 		username,
 		firstName,
@@ -66,7 +68,9 @@ func (r *Repository) UpdateProfile(
 		 RETURNING id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		           balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		           dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		           COALESCE(hwid, ''), created_at, updated_at`,
+		           COALESCE(hwid, ''), cs_faceit_player_id, COALESCE(cs_nickname, ''),
+		           cs_last_known_match_id, cs_last_known_match_started_at, is_cs_linked,
+		           created_at, updated_at`,
 		userID,
 		username,
 		firstName,
@@ -120,12 +124,38 @@ func (r *Repository) IsAdmin(ctx context.Context, telegramID int64) (bool, error
 	return isAdmin, nil
 }
 
+// ListRecent возвращает страницу пользователей, отсортированных по id (новые сначала).
+// Используется административной панелью бота для выбора игрока.
+func (r *Repository) ListRecent(ctx context.Context, limit, offset int) ([]domain.User, error) {
+	rows, err := r.db.Query(ctx, selectUserSQL(`TRUE ORDER BY id DESC LIMIT $1 OFFSET $2`), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]domain.User, 0, limit)
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func selectUserSQL(where string) string {
 	return fmt.Sprintf(
 		`SELECT id, telegram_id, COALESCE(username, ''), COALESCE(first_name, ''),
 		        balance, frozen_balance, is_admin, is_blocked, COALESCE(steam_id, ''),
 		        dota_account_id, last_known_match_id, last_known_match_started_at, is_dota_linked,
-		        COALESCE(hwid, ''), created_at, updated_at
+		        COALESCE(hwid, ''), cs_faceit_player_id, COALESCE(cs_nickname, ''),
+		        cs_last_known_match_id, cs_last_known_match_started_at, is_cs_linked,
+		        created_at, updated_at
 		 FROM users
 		 WHERE %s`,
 		where,
@@ -137,6 +167,9 @@ func scanUser(row pgx.Row) (domain.User, error) {
 	var dotaAccountID sql.NullInt64
 	var lastKnownMatchID sql.NullInt64
 	var lastKnownMatchStartedAt sql.NullTime
+	var csFaceitPlayerID sql.NullString
+	var csLastKnownMatchID sql.NullString
+	var csLastKnownMatchStartedAt sql.NullTime
 	err := row.Scan(
 		&user.ID,
 		&user.TelegramID,
@@ -152,6 +185,11 @@ func scanUser(row pgx.Row) (domain.User, error) {
 		&lastKnownMatchStartedAt,
 		&user.IsDotaLinked,
 		&user.HWID,
+		&csFaceitPlayerID,
+		&user.CSNickname,
+		&csLastKnownMatchID,
+		&csLastKnownMatchStartedAt,
+		&user.IsCSLinked,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -170,6 +208,15 @@ func scanUser(row pgx.Row) (domain.User, error) {
 	}
 	if lastKnownMatchStartedAt.Valid {
 		user.LastKnownMatchStartedAt = &lastKnownMatchStartedAt.Time
+	}
+	if csFaceitPlayerID.Valid {
+		user.CSFaceitPlayerID = &csFaceitPlayerID.String
+	}
+	if csLastKnownMatchID.Valid {
+		user.CSLastKnownMatchID = &csLastKnownMatchID.String
+	}
+	if csLastKnownMatchStartedAt.Valid {
+		user.CSLastKnownMatchStartedAt = &csLastKnownMatchStartedAt.Time
 	}
 
 	return user, nil

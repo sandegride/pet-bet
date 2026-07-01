@@ -34,6 +34,7 @@ const (
 	TransactionTypeBetRefund       TransactionType = "bet_refund"
 	TransactionTypeAdminAdjustment TransactionType = "admin_adjustment"
 	TransactionTypeLinkDotaAccount TransactionType = "link_dota_account"
+	TransactionTypeLinkCSAccount   TransactionType = "link_cs_account"
 	TransactionTypeSyncSnapshot    TransactionType = "sync_match_snapshot"
 )
 
@@ -43,6 +44,8 @@ const (
 	ReferenceTypeMatch     = "match"
 	ReferenceTypeSelfBet   = "self_bet"
 	ReferenceTypeDotaMatch = "dota_match"
+	ReferenceTypeCSBet     = "cs_bet"
+	ReferenceTypeCSMatch   = "cs_match"
 )
 
 type SelfBetStatus string
@@ -70,12 +73,14 @@ const (
 
 // AdminSettings — настройки сервиса, задаются администратором через бота.
 type AdminSettings struct {
-	DefaultOdds    string // коэф для ставки "победа"
-	KillsOverOdds  string // коэф для ставки "тотал килов"
-	FirstBloodOdds string // коэф для ставки "первая кровь"
-	SoloOnlyBets   bool   // учитывать только соло-игры
-	MinAvgMMR      int    // минимальный средний рейтинг матча (0 = отключено)
-	HWIDRequired   bool   // требовать привязку железа
+	DefaultOdds     string // коэф для ставки "победа" (Dota)
+	KillsOverOdds   string // коэф для ставки "тотал килов" (Dota)
+	FirstBloodOdds  string // коэф для ставки "первая кровь" (Dota)
+	SoloOnlyBets    bool   // учитывать только соло-игры (Dota)
+	MinAvgMMR       int    // минимальный средний рейтинг матча (0 = отключено, Dota)
+	HWIDRequired    bool   // требовать привязку железа
+	CSDefaultOdds   string // коэф для ставки "победа" (CS2)
+	CSKillsOverOdds string // коэф для ставки "тотал килов" (CS2)
 }
 
 type MatchResult string
@@ -100,8 +105,14 @@ type User struct {
 	LastKnownMatchStartedAt *time.Time
 	IsDotaLinked            bool
 	HWID                    string
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	// CS2 / FACEIT
+	CSFaceitPlayerID          *string
+	CSNickname                string
+	CSLastKnownMatchID        *string
+	CSLastKnownMatchStartedAt *time.Time
+	IsCSLinked                bool
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 type Match struct {
@@ -163,4 +174,28 @@ type SelfBet struct {
 type SelfBetHistoryItem struct {
 	SelfBet
 	DotaAccountID *int64
+}
+
+// CSBet — ставка на собственный следующий матч CS2 (через FACEIT).
+// Использует те же значения Prediction/Status, что и SelfBet (win, total_kills_over, active, won...),
+// но идентификатор матча в CS2/FACEIT — строка, а не число, поэтому хранится отдельно от SelfBet.
+type CSBet struct {
+	ID              int64
+	UserID          int64
+	Amount          int64
+	FrozenAmount    int64
+	Odds            string
+	PotentialPayout int64
+	Prediction      SelfBetPrediction
+	Status          SelfBetStatus
+	TargetMatchID   *string
+	ResolvedResult  string
+	KillsThreshold  *int64 // только для SelfBetPredictionTotalKillsOver
+	CreatedAt       time.Time
+	SettledAt       *time.Time
+}
+
+type CSBetHistoryItem struct {
+	CSBet
+	CSFaceitPlayerID *string
 }

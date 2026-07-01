@@ -20,6 +20,7 @@ type Config struct {
 	BetLockMinutes   int
 	AdminTelegramIDs []int64
 	Dota             DotaConfig
+	CS               CSConfig
 }
 
 type DotaConfig struct {
@@ -28,6 +29,13 @@ type DotaConfig struct {
 	SteamBaseURL        string
 	SteamWebAPIKey      string
 	MatchesRequested    int
+	SyncIntervalSeconds int
+}
+
+type CSConfig struct {
+	Provider            string
+	FaceitBaseURL       string
+	FaceitAPIKey        string
 	SyncIntervalSeconds int
 }
 
@@ -50,6 +58,10 @@ func Load() (Config, error) {
 	cfg.Dota.OpenDotaBaseURL = getEnv("OPENDOTA_BASE_URL", "https://api.opendota.com/api")
 	cfg.Dota.SteamBaseURL = getEnv("STEAM_BASE_URL", "https://api.steampowered.com")
 	cfg.Dota.SteamWebAPIKey = strings.TrimSpace(os.Getenv("STEAM_WEB_API_KEY"))
+
+	cfg.CS.Provider = strings.ToLower(getEnv("CS_PROVIDER", "mock"))
+	cfg.CS.FaceitBaseURL = getEnv("FACEIT_BASE_URL", "https://open.faceit.com/data/v4")
+	cfg.CS.FaceitAPIKey = strings.TrimSpace(os.Getenv("FACEIT_API_KEY"))
 
 	cfg.Postgres = PostgresConfig{
 		Host:     strings.TrimSpace(os.Getenv("POSTGRES_HOST")),
@@ -82,6 +94,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Dota.MatchesRequested = matchesRequested
+
+	csSyncInterval, err := parseIntEnvWithDefault("CS_SYNC_INTERVAL_SECONDS", 60)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CS.SyncIntervalSeconds = csSyncInterval
 
 	adminIDs, err := parseInt64ListEnv("ADMIN_TELEGRAM_IDS")
 	if err != nil {
@@ -153,6 +171,22 @@ func (cfg Config) Validate() error {
 
 	if cfg.Dota.SyncIntervalSeconds <= 0 {
 		return errors.New("DOTA_SYNC_INTERVAL_SECONDS must be greater than 0")
+	}
+
+	if cfg.CS.Provider != "mock" && cfg.CS.Provider != "faceit" {
+		return errors.New("CS_PROVIDER must be mock or faceit")
+	}
+
+	if cfg.CS.Provider == "faceit" && cfg.CS.FaceitAPIKey == "" {
+		return errors.New("FACEIT_API_KEY is required when CS_PROVIDER=faceit")
+	}
+
+	if cfg.CS.FaceitBaseURL == "" {
+		return errors.New("FACEIT_BASE_URL must not be empty")
+	}
+
+	if cfg.CS.SyncIntervalSeconds <= 0 {
+		return errors.New("CS_SYNC_INTERVAL_SECONDS must be greater than 0")
 	}
 
 	return nil

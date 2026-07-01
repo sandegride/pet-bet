@@ -22,9 +22,11 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 // Если таблица ещё не создана (старая миграция), возвращает дефолты.
 func (r *Repository) GetSettings(ctx context.Context) (domain.AdminSettings, error) {
 	settings := domain.AdminSettings{
-		DefaultOdds:    "2.00",
-		KillsOverOdds:  "1.90",
-		FirstBloodOdds: "1.85",
+		DefaultOdds:     "2.00",
+		KillsOverOdds:   "1.90",
+		FirstBloodOdds:  "1.85",
+		CSDefaultOdds:   "2.00",
+		CSKillsOverOdds: "1.90",
 	}
 
 	rows, err := r.db.Query(ctx, `SELECT key, value FROM admin_settings`)
@@ -54,6 +56,10 @@ func (r *Repository) GetSettings(ctx context.Context) (domain.AdminSettings, err
 			}
 		case "hwid_required":
 			settings.HWIDRequired = value == "true"
+		case "cs_default_odds":
+			settings.CSDefaultOdds = value
+		case "cs_kills_over_odds":
+			settings.CSKillsOverOdds = value
 		}
 	}
 

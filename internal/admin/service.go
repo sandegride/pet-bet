@@ -55,6 +55,16 @@ func (s *Service) SetMinAvgMMR(ctx context.Context, mmr int) error {
 	return s.repo.SetSetting(ctx, "min_avg_mmr", strconv.Itoa(mmr))
 }
 
+// SetCSDefaultOdds устанавливает коэффициент для ставки "победа" в CS2.
+func (s *Service) SetCSDefaultOdds(ctx context.Context, odds string) error {
+	return s.repo.SetSetting(ctx, "cs_default_odds", odds)
+}
+
+// SetCSKillsOverOdds устанавливает коэффициент для ставки "тотал килов" в CS2.
+func (s *Service) SetCSKillsOverOdds(ctx context.Context, odds string) error {
+	return s.repo.SetSetting(ctx, "cs_kills_over_odds", odds)
+}
+
 // ToggleHWIDRequired переключает требование привязки железа.
 func (s *Service) ToggleHWIDRequired(ctx context.Context) (bool, error) {
 	settings, err := s.repo.GetSettings(ctx)

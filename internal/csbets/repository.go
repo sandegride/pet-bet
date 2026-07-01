@@ -1,4 +1,4 @@
-package selfbets
+package csbets
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"stavki/internal/cs"
 	"stavki/internal/domain"
-	"stavki/internal/dota"
 )
 
 type DB interface {
@@ -35,36 +35,38 @@ func (r *Repository) GetUserByIDForUpdate(ctx context.Context, tx pgx.Tx, userID
 	return scanUser(tx.QueryRow(ctx, userSelectSQL(`id = $1 FOR UPDATE`), userID))
 }
 
-func (r *Repository) LinkDotaAccount(
+func (r *Repository) LinkCSAccount(
 	ctx context.Context,
 	tx pgx.Tx,
 	userID int64,
-	accountID int64,
-	lastMatch *dota.RecentMatch,
+	player cs.Player,
+	lastMatch *cs.RecentMatch,
 ) error {
-	var lastMatchID sql.NullInt64
+	var lastMatchID sql.NullString
 	var lastStartedAt sql.NullTime
 	if lastMatch != nil {
-		lastMatchID = sql.NullInt64{Int64: lastMatch.MatchID, Valid: true}
+		lastMatchID = sql.NullString{String: lastMatch.MatchID, Valid: true}
 		lastStartedAt = sql.NullTime{Time: lastMatch.StartedAt, Valid: true}
 	}
 
 	tag, err := tx.Exec(
 		ctx,
 		`UPDATE users
-		 SET dota_account_id = $2,
-		     is_dota_linked = TRUE,
-		     last_known_match_id = $3,
-		     last_known_match_started_at = $4,
+		 SET cs_faceit_player_id = $2,
+		     cs_nickname = $3,
+		     is_cs_linked = TRUE,
+		     cs_last_known_match_id = $4,
+		     cs_last_known_match_started_at = $5,
 		     updated_at = now()
 		 WHERE id = $1`,
 		userID,
-		accountID,
+		player.PlayerID,
+		player.Nickname,
 		lastMatchID,
 		lastStartedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("link dota account: %w", err)
+		return fmt.Errorf("link cs account: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrUserNotFound
@@ -73,12 +75,12 @@ func (r *Repository) LinkDotaAccount(
 	return nil
 }
 
-func (r *Repository) UpdateLastKnownMatch(ctx context.Context, tx pgx.Tx, userID int64, match dota.RecentMatch) error {
+func (r *Repository) UpdateLastKnownMatch(ctx context.Context, tx pgx.Tx, userID int64, match cs.RecentMatch) error {
 	tag, err := tx.Exec(
 		ctx,
 		`UPDATE users
-		 SET last_known_match_id = $2,
-		     last_known_match_started_at = $3,
+		 SET cs_last_known_match_id = $2,
+		     cs_last_known_match_started_at = $3,
 		     updated_at = now()
 		 WHERE id = $1`,
 		userID,
@@ -86,7 +88,7 @@ func (r *Repository) UpdateLastKnownMatch(ctx context.Context, tx pgx.Tx, userID
 		match.StartedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("update last known match: %w", err)
+		return fmt.Errorf("update last known cs match: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrUserNotFound
@@ -95,10 +97,10 @@ func (r *Repository) UpdateLastKnownMatch(ctx context.Context, tx pgx.Tx, userID
 	return nil
 }
 
-func (r *Repository) GetActiveBetForUpdate(ctx context.Context, tx pgx.Tx, userID int64) (domain.SelfBet, error) {
-	return scanSelfBet(tx.QueryRow(
+func (r *Repository) GetActiveBetForUpdate(ctx context.Context, tx pgx.Tx, userID int64) (domain.CSBet, error) {
+	return scanCSBet(tx.QueryRow(
 		ctx,
-		selfBetSelectSQL(`user_id = $1 AND status = $2 FOR UPDATE`),
+		csBetSelectSQL(`user_id = $1 AND status = $2 FOR UPDATE`),
 		userID,
 		string(domain.SelfBetStatusActive),
 	))
@@ -125,10 +127,10 @@ func (r *Repository) CreateActiveBet(
 	potentialPayout int64,
 	prediction domain.SelfBetPrediction,
 	killsThreshold *int64,
-) (domain.SelfBet, error) {
-	return scanSelfBet(tx.QueryRow(
+) (domain.CSBet, error) {
+	return scanCSBet(tx.QueryRow(
 		ctx,
-		`INSERT INTO self_bets
+		`INSERT INTO cs_bets
 		    (user_id, amount, frozen_amount, odds, potential_payout, prediction, status, kills_threshold)
 		 VALUES ($1, $2, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, user_id, amount, frozen_amount, odds::text, potential_payout, prediction, status,
@@ -148,12 +150,12 @@ func (r *Repository) MarkSettled(
 	tx pgx.Tx,
 	betID int64,
 	status domain.SelfBetStatus,
-	matchID int64,
+	matchID string,
 	result string,
 ) error {
 	tag, err := tx.Exec(
 		ctx,
-		`UPDATE self_bets
+		`UPDATE cs_bets
 		 SET status = $2,
 		     target_match_id = $3,
 		     resolved_result = $4,
@@ -166,7 +168,7 @@ func (r *Repository) MarkSettled(
 		string(domain.SelfBetStatusActive),
 	)
 	if err != nil {
-		return fmt.Errorf("settle self bet: %w", err)
+		return fmt.Errorf("settle cs bet: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNoActiveBet
@@ -178,7 +180,7 @@ func (r *Repository) MarkSettled(
 func (r *Repository) CancelActiveBet(ctx context.Context, tx pgx.Tx, betID int64) error {
 	tag, err := tx.Exec(
 		ctx,
-		`UPDATE self_bets
+		`UPDATE cs_bets
 		 SET status = $2, settled_at = now()
 		 WHERE id = $1 AND status = $3 AND target_match_id IS NULL`,
 		betID,
@@ -186,7 +188,7 @@ func (r *Repository) CancelActiveBet(ctx context.Context, tx pgx.Tx, betID int64
 		string(domain.SelfBetStatusActive),
 	)
 	if err != nil {
-		return fmt.Errorf("cancel self bet: %w", err)
+		return fmt.Errorf("cancel cs bet: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrBetAlreadyTargeted
@@ -195,42 +197,47 @@ func (r *Repository) CancelActiveBet(ctx context.Context, tx pgx.Tx, betID int64
 	return nil
 }
 
-func (r *Repository) SaveSnapshot(ctx context.Context, tx pgx.Tx, userID int64, match dota.RecentMatch) error {
+func (r *Repository) SaveSnapshot(ctx context.Context, tx pgx.Tx, userID int64, match cs.RecentMatch) error {
 	raw, err := json.Marshal(match)
 	if err != nil {
-		return fmt.Errorf("marshal match snapshot: %w", err)
+		return fmt.Errorf("marshal cs match snapshot: %w", err)
 	}
 
-	result := dota.ResolvePlayerResult(match.PlayerSlot, match.RadiantWin)
+	result := "loss"
+	if match.Won {
+		result = "win"
+	}
+
 	_, err = tx.Exec(
 		ctx,
-		`INSERT INTO user_match_snapshots
-		    (user_id, dota_match_id, started_at, result, hero_id, player_slot, radiant_win, raw)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 ON CONFLICT (user_id, dota_match_id) DO NOTHING`,
+		`INSERT INTO user_cs_match_snapshots
+		    (user_id, cs_match_id, started_at, result, map_name, kills, deaths, assists, raw)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 ON CONFLICT (user_id, cs_match_id) DO NOTHING`,
 		userID,
 		match.MatchID,
 		match.StartedAt,
 		result,
-		match.HeroID,
-		match.PlayerSlot,
-		match.RadiantWin,
+		match.Map,
+		match.Kills,
+		match.Deaths,
+		match.Assists,
 		string(raw),
 	)
 	if err != nil {
-		return fmt.Errorf("save match snapshot: %w", err)
+		return fmt.Errorf("save cs match snapshot: %w", err)
 	}
 
 	return nil
 }
 
-func (r *Repository) GetActiveBetByTelegramID(ctx context.Context, telegramID int64) (domain.SelfBet, error) {
-	return scanSelfBet(r.db.QueryRow(
+func (r *Repository) GetActiveBetByTelegramID(ctx context.Context, telegramID int64) (domain.CSBet, error) {
+	return scanCSBet(r.db.QueryRow(
 		ctx,
 		`SELECT b.id, b.user_id, b.amount, b.frozen_amount, b.odds::text, b.potential_payout,
 		        b.prediction, b.status, b.target_match_id, COALESCE(b.resolved_result, ''),
 		        b.kills_threshold, b.created_at, b.settled_at
-		 FROM self_bets b
+		 FROM cs_bets b
 		 JOIN users u ON u.id = b.user_id
 		 WHERE u.telegram_id = $1 AND b.status = $2`,
 		telegramID,
@@ -238,13 +245,13 @@ func (r *Repository) GetActiveBetByTelegramID(ctx context.Context, telegramID in
 	))
 }
 
-func (r *Repository) GetHistory(ctx context.Context, telegramID int64, limit int) ([]domain.SelfBetHistoryItem, error) {
+func (r *Repository) GetHistory(ctx context.Context, telegramID int64, limit int) ([]domain.CSBetHistoryItem, error) {
 	rows, err := r.db.Query(
 		ctx,
 		`SELECT b.id, b.user_id, b.amount, b.frozen_amount, b.odds::text, b.potential_payout,
 		        b.prediction, b.status, b.target_match_id, COALESCE(b.resolved_result, ''),
-		        b.kills_threshold, b.created_at, b.settled_at, u.dota_account_id
-		 FROM self_bets b
+		        b.kills_threshold, b.created_at, b.settled_at, u.cs_faceit_player_id
+		 FROM cs_bets b
 		 JOIN users u ON u.id = b.user_id
 		 WHERE u.telegram_id = $1
 		 ORDER BY b.created_at DESC, b.id DESC
@@ -257,9 +264,9 @@ func (r *Repository) GetHistory(ctx context.Context, telegramID int64, limit int
 	}
 	defer rows.Close()
 
-	items := make([]domain.SelfBetHistoryItem, 0, limit)
+	items := make([]domain.CSBetHistoryItem, 0, limit)
 	for rows.Next() {
-		item, err := scanSelfBetHistory(rows)
+		item, err := scanCSBetHistory(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +282,7 @@ func (r *Repository) GetHistory(ctx context.Context, telegramID int64, limit int
 func (r *Repository) GetLinkedUsers(ctx context.Context, limit int) ([]domain.User, error) {
 	rows, err := r.db.Query(
 		ctx,
-		userSelectSQL(`is_dota_linked = TRUE AND dota_account_id IS NOT NULL ORDER BY id LIMIT $1`),
+		userSelectSQL(`is_cs_linked = TRUE AND cs_faceit_player_id IS NOT NULL ORDER BY id LIMIT $1`),
 		limit,
 	)
 	if err != nil {
@@ -312,12 +319,12 @@ func userSelectSQL(where string) string {
 	)
 }
 
-func selfBetSelectSQL(where string) string {
+func csBetSelectSQL(where string) string {
 	return fmt.Sprintf(
 		`SELECT id, user_id, amount, frozen_amount, odds::text, potential_payout,
 		        prediction, status, target_match_id, COALESCE(resolved_result, ''),
 		        kills_threshold, created_at, settled_at
-		 FROM self_bets
+		 FROM cs_bets
 		 WHERE %s`,
 		where,
 	)
@@ -383,11 +390,11 @@ func scanUser(row pgx.Row) (domain.User, error) {
 	return user, nil
 }
 
-func scanSelfBet(row pgx.Row) (domain.SelfBet, error) {
-	var bet domain.SelfBet
+func scanCSBet(row pgx.Row) (domain.CSBet, error) {
+	var bet domain.CSBet
 	var prediction string
 	var status string
-	var targetMatchID sql.NullInt64
+	var targetMatchID sql.NullString
 	var killsThreshold sql.NullInt64
 	var settledAt sql.NullTime
 	err := row.Scan(
@@ -407,15 +414,15 @@ func scanSelfBet(row pgx.Row) (domain.SelfBet, error) {
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return domain.SelfBet{}, ErrNoActiveBet
+			return domain.CSBet{}, ErrNoActiveBet
 		}
-		return domain.SelfBet{}, err
+		return domain.CSBet{}, err
 	}
 
 	bet.Prediction = domain.SelfBetPrediction(prediction)
 	bet.Status = domain.SelfBetStatus(status)
 	if targetMatchID.Valid {
-		bet.TargetMatchID = &targetMatchID.Int64
+		bet.TargetMatchID = &targetMatchID.String
 	}
 	if killsThreshold.Valid {
 		bet.KillsThreshold = &killsThreshold.Int64
@@ -427,14 +434,14 @@ func scanSelfBet(row pgx.Row) (domain.SelfBet, error) {
 	return bet, nil
 }
 
-func scanSelfBetHistory(row pgx.Row) (domain.SelfBetHistoryItem, error) {
-	var item domain.SelfBetHistoryItem
+func scanCSBetHistory(row pgx.Row) (domain.CSBetHistoryItem, error) {
+	var item domain.CSBetHistoryItem
 	var prediction string
 	var status string
-	var targetMatchID sql.NullInt64
+	var targetMatchID sql.NullString
 	var killsThreshold sql.NullInt64
 	var settledAt sql.NullTime
-	var dotaAccountID sql.NullInt64
+	var csFaceitPlayerID sql.NullString
 	err := row.Scan(
 		&item.ID,
 		&item.UserID,
@@ -449,16 +456,16 @@ func scanSelfBetHistory(row pgx.Row) (domain.SelfBetHistoryItem, error) {
 		&killsThreshold,
 		&item.CreatedAt,
 		&settledAt,
-		&dotaAccountID,
+		&csFaceitPlayerID,
 	)
 	if err != nil {
-		return domain.SelfBetHistoryItem{}, err
+		return domain.CSBetHistoryItem{}, err
 	}
 
 	item.Prediction = domain.SelfBetPrediction(prediction)
 	item.Status = domain.SelfBetStatus(status)
 	if targetMatchID.Valid {
-		item.TargetMatchID = &targetMatchID.Int64
+		item.TargetMatchID = &targetMatchID.String
 	}
 	if killsThreshold.Valid {
 		item.KillsThreshold = &killsThreshold.Int64
@@ -466,8 +473,8 @@ func scanSelfBetHistory(row pgx.Row) (domain.SelfBetHistoryItem, error) {
 	if settledAt.Valid {
 		item.SettledAt = &settledAt.Time
 	}
-	if dotaAccountID.Valid {
-		item.DotaAccountID = &dotaAccountID.Int64
+	if csFaceitPlayerID.Valid {
+		item.CSFaceitPlayerID = &csFaceitPlayerID.String
 	}
 
 	return item, nil

@@ -134,6 +134,20 @@ func (s *Service) IsAdmin(ctx context.Context, telegramID int64) (bool, error) {
 	return s.isConfiguredAdmin(telegramID), nil
 }
 
+// ListUsers возвращает страницу пользователей для административной панели бота.
+func (s *Service) ListUsers(ctx context.Context, limit, offset int) ([]domain.User, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.ListRecent(ctx, limit, offset)
+}
+
 func (s *Service) isConfiguredAdmin(telegramID int64) bool {
 	_, ok := s.adminTelegramIDs[telegramID]
 	return ok

@@ -12,6 +12,8 @@ import (
 
 	"stavki/internal/admin"
 	"stavki/internal/config"
+	"stavki/internal/cs"
+	"stavki/internal/csbets"
 	"stavki/internal/dota"
 	"stavki/internal/selfbets"
 	"stavki/internal/telegram"
@@ -51,6 +53,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	csProvider, err := cs.NewProvider(cfg.CS)
+	if err != nil {
+		logger.Error("failed to create cs provider", "error", err)
+		os.Exit(1)
+	}
+
 	notifier, err := telegram.NewNotifier(cfg.TelegramBotToken, logger)
 	if err != nil {
 		logger.Error("failed to create telegram notifier", "error", err)
@@ -65,12 +73,22 @@ func main() {
 	selfBetsRepo := selfbets.NewRepository(pool)
 	selfBetsService := selfbets.NewService(pool, selfBetsRepo, walletService, provider, notifier, adminService, logger)
 
-	worker := workersvc.NewService(provider, selfBetsService, logger)
+	csBetsRepo := csbets.NewRepository(pool)
+	csBetsService := csbets.NewService(pool, csBetsRepo, walletService, csProvider, notifier, adminService, logger)
+
+	syncInterval := cfg.Dota.SyncIntervalSeconds
+	if cfg.CS.SyncIntervalSeconds < syncInterval {
+		syncInterval = cfg.CS.SyncIntervalSeconds
+	}
+
+	worker := workersvc.NewService(provider, selfBetsService, csProvider, csBetsService, logger)
 	logger.Info(
 		"worker started",
 		"dota_provider", cfg.Dota.Provider,
-		"sync_interval_seconds", cfg.Dota.SyncIntervalSeconds,
+		"dota_sync_interval_seconds", cfg.Dota.SyncIntervalSeconds,
+		"cs_provider", cfg.CS.Provider,
+		"cs_sync_interval_seconds", cfg.CS.SyncIntervalSeconds,
 	)
-	worker.Run(ctx, time.Duration(cfg.Dota.SyncIntervalSeconds)*time.Second)
+	worker.Run(ctx, time.Duration(syncInterval)*time.Second)
 	logger.Info("worker stopped")
 }
